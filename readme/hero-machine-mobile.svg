@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="900" viewBox="0 0 640 900" role="img" aria-labelledby="title desc">
+<!-- Copyright (c) 2026, F E R M I ∞ H A R T &lt;contact@fermihart.com&gt; -->
+<!-- License: original unix-v1 terms; see ../LICENSE. -->
+<metadata>source-id:0212018348f152476ed11e3bc85b5651a47ec84c6cbb0f70cf2868a444b92025</metadata>
+<title id="title">Unix V1: native Basm execution and time travel</title>
+<desc id="desc">Machine geometry links RAM, PSW, interrupts, clock, input and private RF/RK disks. Decorative source-derived geometry, not a hardware attestation.</desc>
+<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#070a12"/><stop offset=".6" stop-color="#111426"/><stop offset="1" stop-color="#071c21"/></linearGradient>
+<radialGradient id="orb"><stop stop-color="#65fbd2" stop-opacity=".16"/><stop offset="1" stop-color="#65fbd2" stop-opacity="0"/></radialGradient>
+<pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#8794b8" stroke-opacity=".06"/></pattern></defs>
+<rect x="1" y="1" width="638" height="898" rx="24" fill="url(#bg)" stroke="#333d5b"/>
+<rect x="1" y="1" width="638" height="898" rx="24" fill="url(#grid)"/>
+<text x="40" y="58" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="12" font-weight="700" text-anchor="start" letter-spacing="1.6">FERMI HART / MACHINE GEOMETRY</text>
+<text x="40" y="150" fill="#f5f1df" font-family="DejaVu Sans Mono,monospace" font-size="78" font-weight="700" text-anchor="start" letter-spacing="-3">UNIX V1</text>
+<text x="40" y="193" fill="#ffcc66" font-family="DejaVu Sans Mono,monospace" font-size="19" font-weight="700" text-anchor="start" letter-spacing="0">THE FUTURE STARTED HERE.</text>
+<text x="40" y="232" fill="#a4afff" font-family="DejaVu Sans Mono,monospace" font-size="14" font-weight="400" text-anchor="start" letter-spacing="0">REAL PDP-11 CODE. NATIVE BASM.</text>
+<circle cx="320" cy="420" r="191" fill="url(#orb)"/>
+<circle cx="320" cy="420" r="166.0" fill="none" stroke="#65fbd2" stroke-opacity=".2"/>
+<circle cx="320" cy="420" r="146.0" fill="none" stroke="#65fbd2" stroke-opacity=".4"/>
+<circle cx="320" cy="420" r="92.0" fill="none" stroke="#65fbd2" stroke-opacity=".2"/>
+<path d="M320.0,274.0L446.4,347.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M320.0,274.0L446.4,493.0" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M320.0,274.0L320.0,566.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M320.0,274.0L193.6,493.0" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M320.0,274.0L193.6,347.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M446.4,347.0L446.4,493.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M446.4,347.0L320.0,566.0" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M446.4,347.0L193.6,493.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M446.4,347.0L193.6,347.0" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M446.4,493.0L320.0,566.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M446.4,493.0L193.6,493.0" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M446.4,493.0L193.6,347.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M320.0,566.0L193.6,493.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M320.0,566.0L193.6,347.0" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M193.6,493.0L193.6,347.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<circle cx="320.0" cy="274.0" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="320" y="257" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">RAM</text>
+<circle cx="446.4" cy="347.0" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="446" y="330" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">PSW</text>
+<circle cx="446.4" cy="493.0" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="446" y="476" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">IRQ</text>
+<circle cx="320.0" cy="566.0" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="320" y="593" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">CLOCK</text>
+<circle cx="193.6" cy="493.0" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="194" y="520" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">INPUT</text>
+<circle cx="193.6" cy="347.0" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="194" y="374" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">RF / RK</text>
+<circle cx="486.0" cy="420.0" r="4" fill="#a4afff"/>
+<circle cx="480.3" cy="463.0" r="2" fill="#a4afff"/>
+<circle cx="463.8" cy="503.0" r="3" fill="#ffcc66"/>
+<circle cx="437.4" cy="537.4" r="4" fill="#d58cff"/>
+<circle cx="403.0" cy="563.8" r="2" fill="#65fbd2"/>
+<circle cx="363.0" cy="580.3" r="3" fill="#ffcc66"/>
+<circle cx="320.0" cy="586.0" r="3" fill="#a4afff"/>
+<circle cx="277.0" cy="580.3" r="4" fill="#d58cff"/>
+<circle cx="237.0" cy="563.8" r="4" fill="#a4afff"/>
+<circle cx="202.6" cy="537.4" r="4" fill="#ffcc66"/>
+<circle cx="176.2" cy="503.0" r="2" fill="#a4afff"/>
+<circle cx="159.7" cy="463.0" r="4" fill="#d58cff"/>
+<circle cx="154.0" cy="420.0" r="4" fill="#65fbd2"/>
+<circle cx="159.7" cy="377.0" r="3" fill="#d58cff"/>
+<circle cx="176.2" cy="337.0" r="4" fill="#a4afff"/>
+<circle cx="202.6" cy="302.6" r="2" fill="#ffcc66"/>
+<circle cx="237.0" cy="276.2" r="4" fill="#65fbd2"/>
+<circle cx="277.0" cy="259.7" r="2" fill="#a4afff"/>
+<circle cx="320.0" cy="254.0" r="4" fill="#65fbd2"/>
+<circle cx="363.0" cy="259.7" r="3" fill="#65fbd2"/>
+<circle cx="403.0" cy="276.2" r="2" fill="#65fbd2"/>
+<circle cx="437.4" cy="302.6" r="3" fill="#d58cff"/>
+<circle cx="463.8" cy="337.0" r="2" fill="#d58cff"/>
+<circle cx="480.3" cy="377.0" r="3" fill="#65fbd2"/>
+<circle cx="320" cy="420" r="49" fill="#111b25" stroke="#ffcc66" stroke-width="1.5"/>
+<text x="320" y="416" fill="#f5f1df" font-family="DejaVu Sans Mono,monospace" font-size="16" font-weight="700" text-anchor="middle" letter-spacing="0">PDP-11</text>
+<text x="320" y="438" fill="#ffcc66" font-family="DejaVu Sans Mono,monospace" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="0">11/20</text>
+<rect x="40" y="650" width="272" height="80" rx="10" fill="#0b111e" stroke="#293348"/>
+<text x="56" y="676" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1">BEMU</text>
+<text x="56" y="706" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="23" font-weight="700" text-anchor="start" letter-spacing="0">100% BASM</text>
+<rect x="328" y="650" width="272" height="80" rx="10" fill="#0b111e" stroke="#293348"/>
+<text x="344" y="676" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1">JASH / 11</text>
+<text x="344" y="706" fill="#ffcc66" font-family="DejaVu Sans Mono,monospace" font-size="23" font-weight="700" text-anchor="start" letter-spacing="0">6,282 B</text>
+<rect x="40" y="744" width="272" height="80" rx="10" fill="#0b111e" stroke="#293348"/>
+<text x="56" y="770" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1">HISTORY</text>
+<text x="56" y="800" fill="#a4afff" font-family="DejaVu Sans Mono,monospace" font-size="15" font-weight="700" text-anchor="start" letter-spacing="0">SNAP / BACK / SEEK</text>
+<rect x="328" y="744" width="272" height="80" rx="10" fill="#0b111e" stroke="#293348"/>
+<text x="344" y="770" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1">RF / RK</text>
+<text x="344" y="800" fill="#d58cff" font-family="DejaVu Sans Mono,monospace" font-size="15" font-weight="700" text-anchor="start" letter-spacing="0">PRIVATE VERSIONS</text>
+<text x="40" y="856" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="400" text-anchor="start" letter-spacing="0">LINUX X86-64 / ORIGINAL UNIX-V1 TERMS</text>
+<text x="40" y="878" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="10" font-weight="400" text-anchor="start" letter-spacing="0">SOURCE / 0212018348F152476ED11E3B</text>
+</svg>

@@ -42,6 +42,8 @@ Apout and SIMH, retain their respective notices and licenses.
 - Root `Makefile`, `.gitignore`, and `README.md`: local integration changes
    only; their upstream content is preserved.
 - Root `CHANGELOG.md`: the public summary of our implementation changes.
+- `readme/`: public presentation assets and their capture/render helper.
+  Media retain copyright/license metadata; guest execution remains native.
 
 Generated executables, disk images, and unmodified third-party files do not
 receive invented source authorship. The QEMU image carries copies of this

@@ -1539,6 +1539,8 @@ tt_validate_footer:
 
 ; Monitor output is not guest console output and is never part of a journal.
 tt_puts:
+    cmp     byte [rel raw_active], 0
+    jne     .tty
     mov     rdx, rsi
 .scan:
     cmp     byte [rdx], 0
@@ -1550,6 +1552,46 @@ tt_puts:
     mov     edi, 2
     mov     eax, 1
     syscall
+    ret
+.tty:
+    ; OPOST is disabled: translate host-message LF only, never guest bytes.
+    push    r12
+    mov     r12, rsi
+.tty_next:
+    mov     rsi, r12
+.tty_scan:
+    cmp     byte [r12], 0
+    je      .tty_tail
+    cmp     byte [r12], 10
+    je      .tty_newline
+    inc     r12
+    jmp     .tty_scan
+.tty_newline:
+    mov     rdx, r12
+    sub     rdx, rsi
+    inc     r12
+    test    rdx, rdx
+    jz      .tty_crlf
+    mov     edi, 2
+    mov     eax, 1
+    syscall
+.tty_crlf:
+    lea     rsi, [rel tt_crlf]
+    mov     edx, 2
+    mov     edi, 2
+    mov     eax, 1
+    syscall
+    jmp     .tty_next
+.tty_tail:
+    mov     rdx, r12
+    sub     rdx, rsi
+    test    rdx, rdx
+    jz      .tty_done
+    mov     edi, 2
+    mov     eax, 1
+    syscall
+.tty_done:
+    pop     r12
     ret
 tt_put_hex:
     lea     rdi, [rel tt_hex]
@@ -2267,6 +2309,7 @@ tt_replay_text: db "Replay: live guest input is blocked; host monitor/exit contr
 tt_exists_text: db "Recording path already exists; choose a new file (nothing was overwritten).", 10, 0
 tt_prompt: db "(bemu-tt)> ", 0
 tt_nl: db 10, 0
+tt_crlf: db 13, 10
 tt_erase: db 8, 32, 8, 0
 tt_help: db "help regs devices hash disks console snap snaps restore ID", 10
          db "step [N] back [N] cycle [N] seek BOUNDARY continue quit", 10

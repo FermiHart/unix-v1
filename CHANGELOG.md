@@ -19,6 +19,8 @@
 - QEMU launch path using a minimal Linux guest and SIMH PDP-11.
 - Isolated image packaging, regression suites, and repeatable release
   qualification through `make qualify`.
+- A responsive machine-geometry hero, real Unix/Jash terminal captures,
+  and a reproducible reverse-execution animation for the public README.
 
 ### Fixed
 
@@ -31,6 +33,8 @@
   selected RK image.
 - Rejection of unsupported unquoted backticks before Jash command effects,
   while retaining quoted and escaped backticks as literal data.
+- Host monitor line endings in raw terminals, without changing guest
+  console bytes or redirected diagnostic line endings.
 
 ### Compatibility and safety
 

@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
+<!-- Copyright (c) 2026, F E R M I ∞ H A R T &lt;contact@fermihart.com&gt; -->
+<!-- License: original unix-v1 terms; see ../LICENSE. -->
+<metadata>source-id:0212018348f152476ed11e3bc85b5651a47ec84c6cbb0f70cf2868a444b92025</metadata>
+<title id="title">Unix V1: native Basm execution and time travel</title>
+<desc id="desc">Machine geometry links RAM, PSW, interrupts, clock, input and private RF/RK disks. Decorative source-derived geometry, not a hardware attestation.</desc>
+<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#070a12"/><stop offset=".6" stop-color="#111426"/><stop offset="1" stop-color="#071c21"/></linearGradient>
+<radialGradient id="orb"><stop stop-color="#65fbd2" stop-opacity=".16"/><stop offset="1" stop-color="#65fbd2" stop-opacity="0"/></radialGradient>
+<pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#8794b8" stroke-opacity=".06"/></pattern></defs>
+<rect x="1" y="1" width="1198" height="638" rx="24" fill="url(#bg)" stroke="#333d5b"/>
+<rect x="1" y="1" width="1198" height="638" rx="24" fill="url(#grid)"/>
+<text x="60" y="62" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="15" font-weight="700" text-anchor="start" letter-spacing="1.6">FERMI HART / MACHINE GEOMETRY</text>
+<text x="60" y="167" fill="#f5f1df" font-family="DejaVu Sans Mono,monospace" font-size="88" font-weight="700" text-anchor="start" letter-spacing="-3">UNIX V1</text>
+<text x="60" y="216" fill="#ffcc66" font-family="DejaVu Sans Mono,monospace" font-size="21" font-weight="700" text-anchor="start" letter-spacing="0">THE FUTURE STARTED HERE.</text>
+<text x="60" y="268" fill="#a4afff" font-family="DejaVu Sans Mono,monospace" font-size="17" font-weight="400" text-anchor="start" letter-spacing="0">REAL PDP-11 CODE. NATIVE BASM.</text>
+<text x="60" y="325" fill="#f5f1df" font-family="DejaVu Sans Mono,monospace" font-size="21" font-weight="400" text-anchor="start" letter-spacing="0">Boot the kernel. Write a file.</text>
+<text x="60" y="359" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="21" font-weight="400" text-anchor="start" letter-spacing="0">Rewind the execution.</text>
+<text x="60" y="413" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="12" font-weight="400" text-anchor="start" letter-spacing="0">A RESTORED SYSTEM. A NEW WAY TO EXPLORE IT.</text>
+<circle cx="936" cy="262" r="228" fill="url(#orb)"/>
+<circle cx="936" cy="262" r="203.0" fill="none" stroke="#65fbd2" stroke-opacity=".2"/>
+<circle cx="936" cy="262" r="183.0" fill="none" stroke="#65fbd2" stroke-opacity=".4"/>
+<circle cx="936" cy="262" r="115.3" fill="none" stroke="#65fbd2" stroke-opacity=".2"/>
+<path d="M936.0,79.0L1094.5,170.5" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M936.0,79.0L1094.5,353.5" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M936.0,79.0L936.0,445.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M936.0,79.0L777.5,353.5" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M936.0,79.0L777.5,170.5" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M1094.5,170.5L1094.5,353.5" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M1094.5,170.5L936.0,445.0" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M1094.5,170.5L777.5,353.5" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M1094.5,170.5L777.5,170.5" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M1094.5,353.5L936.0,445.0" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M1094.5,353.5L777.5,353.5" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M1094.5,353.5L777.5,170.5" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M936.0,445.0L777.5,353.5" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<path d="M936.0,445.0L777.5,170.5" stroke="#a4afff" stroke-opacity=".22" fill="none"/>
+<path d="M777.5,353.5L777.5,170.5" stroke="#ffcc66" stroke-opacity=".22" fill="none"/>
+<circle cx="936.0" cy="79.0" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="936" y="62" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">RAM</text>
+<circle cx="1094.5" cy="170.5" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="1094" y="154" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">PSW</text>
+<circle cx="1094.5" cy="353.5" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="1094" y="336" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">IRQ</text>
+<circle cx="936.0" cy="445.0" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="936" y="472" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">CLOCK</text>
+<circle cx="777.5" cy="353.5" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="778" y="381" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">INPUT</text>
+<circle cx="777.5" cy="170.5" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
+<text x="778" y="198" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">RF / RK</text>
+<circle cx="1139.0" cy="262.0" r="4" fill="#a4afff"/>
+<circle cx="1132.1" cy="314.5" r="2" fill="#a4afff"/>
+<circle cx="1111.8" cy="363.5" r="3" fill="#ffcc66"/>
+<circle cx="1079.5" cy="405.5" r="4" fill="#d58cff"/>
+<circle cx="1037.5" cy="437.8" r="2" fill="#65fbd2"/>
+<circle cx="988.5" cy="458.1" r="3" fill="#ffcc66"/>
+<circle cx="936.0" cy="465.0" r="3" fill="#a4afff"/>
+<circle cx="883.5" cy="458.1" r="4" fill="#d58cff"/>
+<circle cx="834.5" cy="437.8" r="4" fill="#a4afff"/>
+<circle cx="792.5" cy="405.5" r="4" fill="#ffcc66"/>
+<circle cx="760.2" cy="363.5" r="2" fill="#a4afff"/>
+<circle cx="739.9" cy="314.5" r="4" fill="#d58cff"/>
+<circle cx="733.0" cy="262.0" r="4" fill="#65fbd2"/>
+<circle cx="739.9" cy="209.5" r="3" fill="#d58cff"/>
+<circle cx="760.2" cy="160.5" r="4" fill="#a4afff"/>
+<circle cx="792.5" cy="118.5" r="2" fill="#ffcc66"/>
+<circle cx="834.5" cy="86.2" r="4" fill="#65fbd2"/>
+<circle cx="883.5" cy="65.9" r="2" fill="#a4afff"/>
+<circle cx="936.0" cy="59.0" r="4" fill="#65fbd2"/>
+<circle cx="988.5" cy="65.9" r="3" fill="#65fbd2"/>
+<circle cx="1037.5" cy="86.2" r="2" fill="#65fbd2"/>
+<circle cx="1079.5" cy="118.5" r="3" fill="#d58cff"/>
+<circle cx="1111.8" cy="160.5" r="2" fill="#d58cff"/>
+<circle cx="1132.1" cy="209.5" r="3" fill="#65fbd2"/>
+<circle cx="936" cy="262" r="49" fill="#111b25" stroke="#ffcc66" stroke-width="1.5"/>
+<text x="936" y="258" fill="#f5f1df" font-family="DejaVu Sans Mono,monospace" font-size="16" font-weight="700" text-anchor="middle" letter-spacing="0">PDP-11</text>
+<text x="936" y="280" fill="#ffcc66" font-family="DejaVu Sans Mono,monospace" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="0">11/20</text>
+<rect x="60" y="482" width="263" height="80" rx="10" fill="#0b111e" stroke="#293348"/>
+<text x="76" y="508" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1">BEMU</text>
+<text x="76" y="538" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="23" font-weight="700" text-anchor="start" letter-spacing="0">100% BASM</text>
+<rect x="338" y="482" width="263" height="80" rx="10" fill="#0b111e" stroke="#293348"/>
+<text x="354" y="508" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1">JASH / 11</text>
+<text x="354" y="538" fill="#ffcc66" font-family="DejaVu Sans Mono,monospace" font-size="23" font-weight="700" text-anchor="start" letter-spacing="0">6,282 B</text>
+<rect x="616" y="482" width="263" height="80" rx="10" fill="#0b111e" stroke="#293348"/>
+<text x="632" y="508" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1">HISTORY</text>
+<text x="632" y="538" fill="#a4afff" font-family="DejaVu Sans Mono,monospace" font-size="15" font-weight="700" text-anchor="start" letter-spacing="0">SNAP / BACK / SEEK</text>
+<rect x="894" y="482" width="263" height="80" rx="10" fill="#0b111e" stroke="#293348"/>
+<text x="910" y="508" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1">RF / RK</text>
+<text x="910" y="538" fill="#d58cff" font-family="DejaVu Sans Mono,monospace" font-size="15" font-weight="700" text-anchor="start" letter-spacing="0">PRIVATE VERSIONS</text>
+<text x="60" y="610" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="12" font-weight="400" text-anchor="start" letter-spacing="0">LINUX X86-64 / ORIGINAL UNIX-V1 TERMS</text>
+<text x="1140" y="610" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="10" font-weight="400" text-anchor="end" letter-spacing="0">SOURCE / 0212018348F152476ED11E3B</text>
+</svg>

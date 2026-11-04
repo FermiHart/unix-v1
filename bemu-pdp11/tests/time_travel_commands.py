@@ -134,6 +134,18 @@ class Commands(unittest.TestCase):
             self.assertIn(b'PSW=', session.command('regx\bs'))
             self.assertEqual(session.state_hash(), initial)
 
+    def test_host_monitor_lines_return_to_column_zero_in_raw_mode(self):
+        with self.monitor() as session:
+            initial = session.state_hash()
+            output = session.command('help')
+            self.assertNotRegex(output, rb'(?<!\r)\n', 'raw host output needs CRLF, not a staircase')
+            self.assertEqual(session.state_hash(), initial)
+
+    def test_redirected_host_diagnostics_keep_unix_line_endings(self):
+        result = self.run_cli('--time-travel', '--test', self.counter, data=b'help\nquit\n')
+        self.assertIn(b'help regs devices', result.stderr)
+        self.assertNotIn(b'\r', result.stderr)
+
     def test_max_forward_request_automatic_ring_and_pinned_initial(self):
         with self.monitor() as session:
             initial = session.state_hash()

@@ -2,7 +2,21 @@
 <!-- Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com> -->
 <!-- License: original unix-v1 terms; see LICENSE. -->
 
-# UNIX V1 — The future started here.
+<p align="center">
+  <picture>
+    <source media="(max-width: 600px)" srcset="readme/hero-machine-mobile.svg">
+    <img src="readme/hero-machine.svg" width="100%" alt="Unix V1 machine geometry: native Basm execution, PDP-11 state, private RF/RK disks and reverse navigation">
+  </picture>
+</p>
+
+<h1 align="center">UNIX V1 — The future started here.</h1>
+
+<p align="center">
+  <strong>A foundational operating system. Native Basm execution. A way back.</strong><br>
+  <a href="#watch-it-run-then-watch-it-go-back">WATCH IT RUN</a> ·
+  <a href="#start-with-a-machine-you-can-rewind">BOOT IT</a> ·
+  <a href="bemu-pdp11/docs/">READ THE MACHINE</a>
+</p>
 
 In 1971, at Bell Laboratories, **First Edition UNIX** brought a distinctive
 approach to operating systems to the PDP-11/20. Written in assembly, it
@@ -26,6 +40,23 @@ We wanted more than a photograph of that history.
 [Bemu-pdp11](bemu-pdp11/README.md) · [Jash/11](jash11/README.md) ·
 [Technical specifications](bemu-pdp11/docs/) · [Changelog](CHANGELOG.md)
 
+## Watch it run. Then watch it go back.
+
+<p align="center">
+  <a href="readme/unix-v1-in-action.gif">
+    <img src="readme/unix-v1-in-action.gif" width="100%" alt="Real Bemu session: Unix V1 login, native Jash commands, a checkpoint, 100 forward instructions, and a reverse step restoring the original canonical hash">
+  </a>
+</p>
+
+<p align="center"><em>Actual emulator output, captured through a PTY and
+re-rendered as terminal cells. Typed input and pauses are paced for readability.
+The capture checks state restoration, verifies session replay, and confirms
+the base images are unchanged.</em></p>
+
+| Boot the system | Work inside it | Go back |
+|---|---|---|
+| ROM-to-kernel boot, `root` login, and a filesystem listing | Native Jash/11, a file write/readback, completion and history | `snap` → `step 100` → `back 100`; the original canonical witness returns |
+
 ## Not a picture of UNIX. UNIX, running.
 
 This project builds on the historical Unix V1 restoration described below.
@@ -36,6 +67,15 @@ Our contribution is a new way to execute, inspect, and experiment with that
 system while preserving its restored kernel, historical shell, `init`, and
 `getty`. Guest programs still execute as PDP-11 code inside the guest kernel.
 There is no host-side script pretending to be the UNIX shell.
+
+<details>
+<summary><strong>See the actual Unix V1 login and filesystem</strong></summary>
+
+<p align="center">
+  <a href="readme/unix-v1-boot.png"><img src="readme/unix-v1-boot.png" width="100%" alt="Captured Unix V1 root login and ls -l output running in native Bemu"></a>
+</p>
+
+</details>
 
 ## Two architectures. One operating system.
 
@@ -77,6 +117,14 @@ Base disks stay read-only in temporal modes. Replay checks the resulting
 machine state, disk contents, logical console output, and journal position.
 The monitor belongs to the emulator, not to a modified guest shell.
 
+<p align="center">
+  <a href="readme/time-travel.png"><img src="readme/time-travel.png" width="100%" alt="Captured host monitor: advancing 100 instructions changes the canonical hash; going back restores the original hash"></a>
+</p>
+
+The matching values are real FNV witnesses from that captured session,
+not an authentication or formal trace-equivalence claim. The footer is a
+capture-driver check, separate from guest and monitor output.
+
 ## A new shell. Inside the old UNIX.
 
 **Jash/11 runs inside the restored Unix V1 kernel as a native PDP-11 program.**
@@ -92,6 +140,37 @@ V1 edition, not a promise of modern-shell or POSIX feature parity.
 
 The goal is not to disguise an old system as a new one. It is to build a
 useful new experience while respecting what that system actually supports.
+
+<p align="center">
+  <a href="readme/jash11-live.png"><img src="readme/jash11-live.png" width="100%" alt="Native Jash/11 running inside Unix V1: version, quoted echo with redirection, cat, filename completion, and session history"></a>
+</p>
+
+<details>
+<summary><strong>Reproduce the screenshots and animation</strong></summary>
+
+The presentation helper builds the Basm emulator and guest, creates a
+private image pair, records the real session, asserts the reverse witness,
+and verifies replay before rendering. It does not interpret guest commands
+or replace the execution backend.
+
+It requires the normal build dependencies plus Python 3, Pillow, `pyte`,
+Fontconfig and DejaVu Sans Mono. With compatible Bear Basm on `PATH`:
+
+```sh
+make -C tools
+make -C build
+python3 readme/generate_media.py
+python3 readme/generate_media.py --check
+```
+
+Set `BASM` to select another compatible assembler. Raw recordings and
+images stay in the printed private workspace; only the curated SVG/PNG/GIF
+assets belong in the repository. Geometry is derived from source identity,
+not from a security measurement. Witness values can differ between live
+captures: the behavior checks, not the media bytes, are reproducible. No
+art or license is imported from other projects.
+
+</details>
 
 ## Start with a machine you can rewind.
 
