@@ -47,6 +47,7 @@ h3 { font-size: 24px; letter-spacing: -.025em; line-height: 1.25; }
 .nav-links a { color: var(--dim); font-size: 12px; text-decoration: none; }
 .nav-links a:hover { color: var(--teal); }
 .nav-links .nav-button { border: 1px solid var(--line); border-radius: 999px; color: var(--ink); padding: 10px 16px; }
+.nav-links .nav-download { color: var(--gold); font-weight: 700; }
 .hero { padding-top: 77px; padding-bottom: 45px; }
 .hero-grid { display: grid; grid-template-columns: 1fr 1.04fr; gap: 38px; align-items: center; }
 .hero-grid > * { min-width: 0; }
@@ -105,6 +106,13 @@ summary { color: var(--cyan); font-size: 14px; cursor: pointer; }
 .code { max-width: 100%; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 15px; padding: 26px; line-height: 1.85; font-size: 13px; margin-top: 30px; }
 .code code { font-size: inherit; overflow-wrap: normal; }
 .start, .boundary { border-top: 1px solid var(--line); }
+.assembler-download { margin-top: 25px; padding: 20px 24px; border: 1px solid #65fbd24d; border-radius: 12px; background: #65fbd205; font-size: 15px; }
+.assembler-download strong { display: block; margin-bottom: 8px; color: var(--ink); }
+.assembler-download span { display: block; margin-top: 12px; color: var(--dim); font-size: 13px; }
+.footer-author { display: flex; flex-direction: column; align-items: flex-start; gap: 18px; margin-bottom: 34px; }
+.footer-author > span { color: var(--dim); font-size: 11px; }
+.footer-author > strong { color: var(--ink); font: 700 15px/1.6 var(--mono); letter-spacing: .12em; }
+.footer-author > a { font: 13px/1.7 var(--mono); margin-top: 4px; }
 .closing { font-size: clamp(27px, 4vw, 47px); line-height: 1.2; letter-spacing: -.035em; margin: 65px 0 10px; }
 .closing strong { color: var(--teal); }
 footer { border-top: 1px solid var(--line); padding-top: 45px; padding-bottom: 60px; color: var(--dim); font-size: 12px; }
@@ -125,6 +133,8 @@ footer p { margin-bottom: 10px; }
   .nav-links { gap: 0; }
   .nav-links a:not(.nav-button) { display: none; }
   .nav-links .nav-button { font-size: 10px; padding: 8px 11px; }
+  .nav-links a.nav-button { display: none; }
+  .nav-links a.nav-download { display: inline-flex; padding: 8px 11px; border: 1px solid #ffcc6659; border-radius: 999px; font-size: 11px; }
   .wordmark { font-size: 14px; letter-spacing: .1em; }
   .hero { padding-top: 46px; }
   .hero-grid { gap: 30px; }

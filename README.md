@@ -15,6 +15,7 @@
   <strong>A foundational operating system. Native Basm execution. A way back.</strong><br>
   <a href="#watch-it-run-then-watch-it-go-back">WATCH IT RUN</a> ·
   <a href="#start-with-a-machine-you-can-rewind">BOOT IT</a> ·
+  <a href="https://github.com/FermiHart/basm#get-the-development-candidate">GET BASM</a> ·
   <a href="https://fermihart.github.io/unix-v1/">OPEN THE WEBSITE</a> ·
   <a href="bemu-pdp11/docs/">READ THE MACHINE</a>
 </p>
@@ -338,6 +339,10 @@ Run `make test-bemu` for CPU/device regressions and the automated boot test
 (login, RF/RK filesystem access, and file writes on private disk copies).
 The build looks for Bear Basm as `basm` on `PATH`; override it with
 `BASM=/absolute/path/to/basm` when using a compatible derivative.
+Download Bear Basm from the [official repository](https://github.com/FermiHart/basm)
+or its [Linux x86-64 development packages](https://github.com/FermiHart/basm#get-the-development-candidate).
+Check the supplied checksum and follow the package's installation or
+run-in-place instructions; GNU `ld` is a separate linking dependency.
 
 ## Bemu time travel
 

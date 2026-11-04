@@ -37,6 +37,8 @@
   while retaining quoted and escaped backticks as literal data.
 - Host monitor line endings in raw terminals, without changing guest
   console bytes or redirected diagnostic line endings.
+- Use the public assembler's 64-bit data container for explicit PDP-11
+  words, preserving guest bytes while avoiding compatibility-only modes.
 
 ### Compatibility and safety
 

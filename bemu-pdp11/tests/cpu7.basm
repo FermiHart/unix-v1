@@ -1,7 +1,7 @@
 ; Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
 ; License: original unix-v1 terms; see ../../LICENSE.
 ; PSW serialization must not depend on the host ECX high bytes left by EA.
-BITS 32
+BITS 64
 section .text
     dw 0x15C6, 0x0200              ; MOV #1000,SP
     dw 0x0A1F, 0xFFFE              ; CLR @#PSW

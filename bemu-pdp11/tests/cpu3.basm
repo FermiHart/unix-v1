@@ -4,7 +4,7 @@
 ; cpu3.basm -- EAE self-test for bemu-pdp11 (hand-encoded PDP-11 words,
 ; assembled with Bear Basm -f bin). R0=52 oct on success, 0 on fail.
 ; Encodings cross-checked against SIMH decode ranges + BOOT traces.
-BITS 32
+BITS 64
 section .text
     dw 0x15C6, 0x0200     ; mov $1000,sp
     dw 0x15C0, 0x0006     ; mov $6,r0

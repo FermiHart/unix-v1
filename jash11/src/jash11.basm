@@ -4,11 +4,11 @@
 ; Jash/11: a bounded, independently implemented native PDP-11 shell profile.
 ; No source is copied from the modern Jash implementation. ANSI SGR values
 ; follow its default Midnight palette: banner 96, prompt 97 + bold.
-; Bear Basm emits explicit PDP-11 words, not x86 instructions. BITS 32
+; Bear Basm emits explicit PDP-11 words, not x86 instructions. BITS 64
 ; selects the assembler container only. The 0407 loader places text at
 ; 040000 octal; LOAD converts a file-offset label into a guest address.
 ; Branches use fixed local skips; non-local control flow uses absolute JMP.
-BITS 32
+BITS 64
 section .text
 LOAD equ 0x3FF0
     dw 0x0107, image_end-text, 0, 0, 0, 0, 0, 0

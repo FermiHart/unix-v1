@@ -23,7 +23,8 @@ and RK filesystems.
 
 ## Requirements
 
-- Linux x86-64, Bear Basm or a compatible derivative, and GNU `ld`.
+- Linux x86-64, [Bear Basm](https://github.com/FermiHart/basm) or a compatible
+  derivative, and GNU `ld`.
 - Run `make` at the repository root to build the Unix V1 disk images.
 - Tests also require `timeout`, `expect`, and the repository's V1 assembler
   running under `tools/apout`.
@@ -31,6 +32,13 @@ and RK filesystems.
 SIMH is the reference implementation and powers the separate QEMU workflow;
 it is not a runtime dependency of Bemu-pdp11. The external assembler is not
 bundled with this project.
+
+Get the Linux x86-64 development binary and its checksum from the
+[official Basm downloads](https://github.com/FermiHart/basm#get-the-development-candidate).
+Follow the [package instructions](https://github.com/FermiHart/basm/blob/main/downloads/README.md)
+and select the extracted executable with `BASM=/absolute/path/to/bin/basm`.
+The public 64-bit assembler mode is also the container for our explicitly
+encoded PDP-11 data; it does not change the guest instruction width.
 
 ## Build, run, and test
 

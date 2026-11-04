@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
 <!-- Copyright (c) 2026, F E R M I ∞ H A R T &lt;contact@fermihart.com&gt; -->
 <!-- License: original unix-v1 terms; see ../LICENSE. -->
-<metadata>source-id:0212018348f152476ed11e3bc85b5651a47ec84c6cbb0f70cf2868a444b92025</metadata>
+<metadata>source-id:4ee43d9b345634d5782761a89c84658a681dd7d216be74b0df3c643c3437ea4c</metadata>
 <title id="title">Unix V1: native Basm execution and time travel</title>
 <desc id="desc">Machine geometry links RAM, PSW, interrupts, clock, input and private RF/RK disks. Decorative source-derived geometry, not a hardware attestation.</desc>
 <defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#070a12"/><stop offset=".6" stop-color="#111426"/><stop offset="1" stop-color="#071c21"/></linearGradient>
@@ -47,30 +47,30 @@
 <text x="778" y="381" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">INPUT</text>
 <circle cx="777.5" cy="170.5" r="7" fill="#65fbd2" stroke="#d9fff0" stroke-width="1.2"/>
 <text x="778" y="198" fill="#65fbd2" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1">RF / RK</text>
-<circle cx="1139.0" cy="262.0" r="4" fill="#a4afff"/>
-<circle cx="1132.1" cy="314.5" r="2" fill="#a4afff"/>
+<circle cx="1139.0" cy="262.0" r="2" fill="#a4afff"/>
+<circle cx="1132.1" cy="314.5" r="2" fill="#65fbd2"/>
 <circle cx="1111.8" cy="363.5" r="3" fill="#ffcc66"/>
 <circle cx="1079.5" cy="405.5" r="4" fill="#d58cff"/>
-<circle cx="1037.5" cy="437.8" r="2" fill="#65fbd2"/>
-<circle cx="988.5" cy="458.1" r="3" fill="#ffcc66"/>
-<circle cx="936.0" cy="465.0" r="3" fill="#a4afff"/>
-<circle cx="883.5" cy="458.1" r="4" fill="#d58cff"/>
-<circle cx="834.5" cy="437.8" r="4" fill="#a4afff"/>
-<circle cx="792.5" cy="405.5" r="4" fill="#ffcc66"/>
-<circle cx="760.2" cy="363.5" r="2" fill="#a4afff"/>
-<circle cx="739.9" cy="314.5" r="4" fill="#d58cff"/>
-<circle cx="733.0" cy="262.0" r="4" fill="#65fbd2"/>
-<circle cx="739.9" cy="209.5" r="3" fill="#d58cff"/>
-<circle cx="760.2" cy="160.5" r="4" fill="#a4afff"/>
-<circle cx="792.5" cy="118.5" r="2" fill="#ffcc66"/>
+<circle cx="1037.5" cy="437.8" r="3" fill="#65fbd2"/>
+<circle cx="988.5" cy="458.1" r="4" fill="#a4afff"/>
+<circle cx="936.0" cy="465.0" r="3" fill="#65fbd2"/>
+<circle cx="883.5" cy="458.1" r="2" fill="#ffcc66"/>
+<circle cx="834.5" cy="437.8" r="2" fill="#65fbd2"/>
+<circle cx="792.5" cy="405.5" r="2" fill="#d58cff"/>
+<circle cx="760.2" cy="363.5" r="3" fill="#ffcc66"/>
+<circle cx="739.9" cy="314.5" r="2" fill="#65fbd2"/>
+<circle cx="733.0" cy="262.0" r="2" fill="#65fbd2"/>
+<circle cx="739.9" cy="209.5" r="2" fill="#65fbd2"/>
+<circle cx="760.2" cy="160.5" r="4" fill="#ffcc66"/>
+<circle cx="792.5" cy="118.5" r="2" fill="#a4afff"/>
 <circle cx="834.5" cy="86.2" r="4" fill="#65fbd2"/>
-<circle cx="883.5" cy="65.9" r="2" fill="#a4afff"/>
-<circle cx="936.0" cy="59.0" r="4" fill="#65fbd2"/>
-<circle cx="988.5" cy="65.9" r="3" fill="#65fbd2"/>
-<circle cx="1037.5" cy="86.2" r="2" fill="#65fbd2"/>
-<circle cx="1079.5" cy="118.5" r="3" fill="#d58cff"/>
-<circle cx="1111.8" cy="160.5" r="2" fill="#d58cff"/>
-<circle cx="1132.1" cy="209.5" r="3" fill="#65fbd2"/>
+<circle cx="883.5" cy="65.9" r="4" fill="#ffcc66"/>
+<circle cx="936.0" cy="59.0" r="4" fill="#d58cff"/>
+<circle cx="988.5" cy="65.9" r="2" fill="#a4afff"/>
+<circle cx="1037.5" cy="86.2" r="3" fill="#a4afff"/>
+<circle cx="1079.5" cy="118.5" r="3" fill="#a4afff"/>
+<circle cx="1111.8" cy="160.5" r="4" fill="#65fbd2"/>
+<circle cx="1132.1" cy="209.5" r="4" fill="#65fbd2"/>
 <circle cx="936" cy="262" r="49" fill="#111b25" stroke="#ffcc66" stroke-width="1.5"/>
 <text x="936" y="258" fill="#f5f1df" font-family="DejaVu Sans Mono,monospace" font-size="16" font-weight="700" text-anchor="middle" letter-spacing="0">PDP-11</text>
 <text x="936" y="280" fill="#ffcc66" font-family="DejaVu Sans Mono,monospace" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="0">11/20</text>
@@ -87,5 +87,5 @@
 <text x="910" y="508" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1">RF / RK</text>
 <text x="910" y="538" fill="#d58cff" font-family="DejaVu Sans Mono,monospace" font-size="15" font-weight="700" text-anchor="start" letter-spacing="0">PRIVATE VERSIONS</text>
 <text x="60" y="610" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="12" font-weight="400" text-anchor="start" letter-spacing="0">LINUX X86-64 / ORIGINAL UNIX-V1 TERMS</text>
-<text x="1140" y="610" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="10" font-weight="400" text-anchor="end" letter-spacing="0">SOURCE / 0212018348F152476ED11E3B</text>
+<text x="1140" y="610" fill="#8794b8" font-family="DejaVu Sans Mono,monospace" font-size="10" font-weight="400" text-anchor="end" letter-spacing="0">SOURCE / 4EE43D9B345634D5782761A8</text>
 </svg>

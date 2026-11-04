@@ -43,7 +43,8 @@ shell. `/bin/sh`, the kernel, `init`, `getty`, and the login configuration
 are not replaced. To close Bemu itself, use **Ctrl-E**, **Ctrl-A then X**,
 or **Ctrl-X then A** (release Ctrl before the final letter).
 
-Requirements: Linux x86-64, a compatible Bear Basm installation, GNU `ld`,
+Requirements: Linux x86-64, a compatible [Bear Basm](https://github.com/FermiHart/basm)
+installation, GNU `ld`,
 the repository's image-building tools, Python 3, `expect`, and `flock`.
 Select the assembler with `BASM=/absolute/path/to/basm` if necessary.
 
@@ -154,7 +155,7 @@ output targets `/dev/tty8` when available, with stdout as a fallback.
 
 ## Artifact and disk safety
 
-The `0407` executable loads at `040000` octal. `BITS 32` selects the
+The `0407` executable loads at `040000` octal. `BITS 64` selects the
 assembler container, not the guest CPU. The image verifier enforces an
 **8 KiB initialized-code/data budget** within the 16 KiB user window,
 reports the exact byte count and SHA-256, checks native file installation,
