@@ -21,6 +21,8 @@
   qualification through `make qualify`.
 - A responsive machine-geometry hero, real Unix/Jash terminal captures,
   and a reproducible reverse-execution animation for the public README.
+- A standalone English project site with accessible animation controls,
+  source-bound media staging and automated GitHub Pages publication.
 
 ### Fixed
 

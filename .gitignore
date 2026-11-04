@@ -36,3 +36,7 @@ qemu/initramfs.cpio.gz
 
 # Generated diagnostics are local evidence, not source artifacts.
 *.log
+
+# Curated static-site staging output.
+/_site/
+__pycache__/

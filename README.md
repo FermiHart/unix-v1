@@ -15,6 +15,7 @@
   <strong>A foundational operating system. Native Basm execution. A way back.</strong><br>
   <a href="#watch-it-run-then-watch-it-go-back">WATCH IT RUN</a> ·
   <a href="#start-with-a-machine-you-can-rewind">BOOT IT</a> ·
+  <a href="https://fermihart.github.io/unix-v1/">OPEN THE WEBSITE</a> ·
   <a href="bemu-pdp11/docs/">READ THE MACHINE</a>
 </p>
 
@@ -376,6 +377,19 @@ private per-stage logs plus a machine-readable verdict. See the
 [test instructions](bemu-pdp11/README.md#regression-coverage) for requirements
 and coverage. Missing prerequisites or any failed gate block approval.
 Project changes are summarized in [CHANGELOG.md](CHANGELOG.md).
+
+The [standalone project page](https://fermihart.github.io/unix-v1/) uses the
+same verified captures as this README. To preview it locally without a
+frontend toolchain:
+
+```sh
+python3 website/build.py --output _site
+python3 -m http.server --bind 127.0.0.1 --directory _site 8000
+```
+
+The builder accepts only new/empty output directories and stages an explicit
+allowlist: HTML, CSS, the original license and the six curated media assets.
+Raw sessions, disks, logs and host executables are never copied into the site.
 
 The manuals for 1st Edition UNIX are available here:
 <https://web.archive.org/web/20250114151916/https://www.bell-labs.com/usr/dmr/www/1stEdman.html>,

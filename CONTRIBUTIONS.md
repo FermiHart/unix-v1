@@ -44,6 +44,9 @@ Apout and SIMH, retain their respective notices and licenses.
 - Root `CHANGELOG.md`: the public summary of our implementation changes.
 - `readme/`: public presentation assets and their capture/render helper.
   Media retain copyright/license metadata; guest execution remains native.
+- `website/` and the Pages workflow: the static public presentation,
+  allowlisted staging helper and deployment configuration, under the same
+  original license. No guest/runtime behavior is implemented by the website.
 
 Generated executables, disk images, and unmodified third-party files do not
 receive invented source authorship. The QEMU image carries copies of this

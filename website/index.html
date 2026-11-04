@@ -1,0 +1,167 @@
+<!doctype html>
+<!-- Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com> -->
+<!-- License: original unix-v1 terms; see ../LICENSE. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#070a12">
+  <meta name="description" content="Unix V1, alive again. Explore the restored system through a native Basm PDP-11 emulator, Jash/11, complete checkpoints and reverse execution. Watch real sessions, then run them yourself.">
+  <link rel="canonical" href="https://fermihart.github.io/unix-v1/">
+  <meta property="og:title" content="UNIX V1 — The future started here. Now follow it back.">
+  <meta property="og:description" content="A foundational operating system. Native Basm execution. A way back. See the real Unix/Jash session and reverse-execution witness.">
+  <meta property="og:image" content="https://fermihart.github.io/unix-v1/assets/time-travel.png">
+  <meta property="og:url" content="https://fermihart.github.io/unix-v1/">
+  <title>UNIX V1 — The future started here.</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23070a12'/%3E%3Cpath d='m5 7 5 5-5 5m8 0h6' fill='none' stroke='%2365fbd2' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="aurora" aria-hidden="true"></div>
+  <nav class="navigation" aria-label="Main navigation">
+    <a class="wordmark" href="#top">UNIX V1<span aria-hidden="true">∞</span></a>
+    <div class="nav-links"><a href="#history">The roots</a><a href="#watch">In action</a><a href="#time">Time travel</a><a href="#shell">Jash/11</a><a class="nav-button" href="https://github.com/fermihart/unix-v1">Read the source ↗</a></div>
+  </nav>
+
+  <header id="top" class="hero wrap">
+    <div class="hero-grid">
+      <div>
+        <p class="eyebrow">A FOUNDATION OF MODERN COMPUTING</p>
+        <h1>The future<br>started here.<br><span class="gradient">Now follow it back.</span></h1>
+        <p class="hero-statement">In 1971, at Bell Laboratories, First Edition UNIX brought processes, a hierarchical file system and multiple users to the PDP-11/20—in assembly, on a remarkably small machine.</p>
+        <p class="lede">UNIX began on the PDP-7 in 1969. Ken Thompson, Dennis Ritchie and their Bell Labs colleagues were developing ideas that would outlive the hardware: simple mechanisms, consistent interfaces and systems people could understand.</p>
+        <p class="lede">That lineage helped shape Linux, macOS, servers and the infrastructure we now take for granted. <strong>Part of the reason we can build what we build today is that someone laid these foundations then.</strong></p>
+        <div class="cta-row"><a class="button primary" href="#watch">Watch the machine run ↓</a><a class="button secondary" href="#start">Switch it on yourself</a></div>
+      </div>
+      <picture class="hero-art"><source media="(max-width: 640px)" srcset="assets/hero-machine-mobile.svg"><img src="assets/hero-machine.svg" width="1200" height="640" fetchpriority="high" alt="Unix V1 machine geometry: RAM, PSW, interrupts, clock, input and private RF/RK disks around the PDP-11"></picture>
+    </div>
+    <div class="facts" aria-label="Implementation facts">
+      <div><span>NATIVE EMULATOR</span><strong>100% Basm</strong><small>Linux x86-64. Direct syscalls. No libc.</small></div>
+      <div><span>GUEST MACHINE</span><strong>PDP-11/20</strong><small>KE11-A, RF/RK, console and clock.</small></div>
+      <div><span>NATIVE SHELL</span><strong>Jash/11</strong><small>An 8 KiB initialized-code/data budget.</small></div>
+      <div><span>NAVIGATION</span><strong>A way back</strong><small>Checkpoints. Record/replay. Reverse steps.</small></div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section id="watch" class="section wrap">
+      <div class="section-heading"><div><p class="eyebrow">NOT A PHOTOGRAPH OF HISTORY</p><h2>Watch it boot.<br>Then watch it <span class="gradient">go back.</span></h2></div><p class="lede">The restored kernel reaches its shell. Jash writes and reads a file. The host monitor advances 100 instructions, goes back, and recovers the original canonical witness. These are real captured outputs.</p></div>
+      <figure class="demo" data-demo>
+        <picture><source media="(prefers-reduced-motion: reduce)" srcset="assets/time-travel.png"><img src="assets/unix-v1-in-action.gif" data-animation="assets/unix-v1-in-action.gif" data-poster="assets/time-travel.png" width="1280" height="900" alt="Actual native Bemu session: Unix V1 login, Jash commands, a checkpoint, 100 forward instructions, and reverse execution restoring the original hash"></picture>
+        <div class="demo-toolbar"><span>REAL PTY CAPTURE · ORIGINAL GUEST EXECUTION · PACED FOR READABILITY</span><button type="button" data-toggle hidden>Pause animation</button><a href="assets/unix-v1-in-action.gif">Open full size ↗</a></div>
+        <figcaption>Captured from the native Basm runtime and re-rendered as terminal cells. Typed input and pauses are paced. The driver checks restoration, verifies session replay and confirms unchanged base images. This is a recording, not an in-browser PDP-11 interpreter.</figcaption>
+      </figure>
+      <div class="triptych">
+        <article><span>01 / BOOT</span><h3>The kernel does the work.</h3><p>The ROM-to-shell path executes real PDP-11 code. No host script imitates guest commands or skips the historical login path.</p></article>
+        <article><span>02 / EXPLORE</span><h3>The guest stays the guest.</h3><p>Run the historical shell or native Jash/11. Guest file operations stay inside the restored Unix kernel and emulated RF/RK devices.</p></article>
+        <article><span>03 / REWIND</span><h3>The state comes back.</h3><p>CPU, RAM, implemented devices, pending events and private disk versions belong to the timeline—not RAM alone.</p></article>
+      </div>
+    </section>
+
+    <section id="history" class="section wrap">
+      <p class="eyebrow">PRESERVATION WITHOUT A CLAIM OF AUTHORSHIP</p>
+      <h2>We did not write UNIX.<br>We built new ways <span class="gradient">to explore it.</span></h2>
+      <p class="lede">This project builds on a historical restoration of Unix V1 around 1972, not an untouched original 1971 disk image. Its reconstruction combines a kernel printout from shortly after V1 with recovered early userland. The restorers' work makes this experience possible.</p>
+      <div class="timeline" aria-label="Historical context"><div><b>1969</b><span>UNIX begins on the PDP-7.</span></div><div><b>1971</b><span>First Edition UNIX on the PDP-11, written in assembly.</span></div><div><b>Restored</b><span>The reconstructed early system becomes executable again.</span></div><div><b>Today</b><span>Native Basm emulation, a new guest shell and bounded time travel.</span></div></div>
+      <p class="scope-note">Our additions preserve the restored kernel, <code>/bin/sh</code>, <code>init</code> and <code>getty</code>. They do not replace historical authorship. Read <a href="https://github.com/fermihart/unix-v1/blob/master/CREDITS">the credits</a> and Warren Toomey's <a href="https://www.usenix.org/legacy/event/usenix09/tech/full_papers/toomey/toomey.pdf">The Restoration of Early UNIX Artifacts</a>.</p>
+      <details class="evidence"><summary>Open the actual login and filesystem capture ↗</summary><a href="assets/unix-v1-boot.png"><img src="assets/unix-v1-boot.png" width="1280" height="900" loading="lazy" alt="Captured native Bemu boot, root login, and Unix V1 ls -l output"></a></details>
+    </section>
+
+    <section id="machine" class="section wrap">
+      <div class="section-heading"><div><p class="eyebrow">TWO ARCHITECTURES. ONE OPERATING SYSTEM.</p><h2>A machine beneath<br><span class="gradient">the prompt.</span></h2></div><p class="lede">A terminal window is the visible part. Underneath it are instruction decoding, effective addressing, condition codes, stacks, interrupt arbitration, clocks, console queues and disk DMA—all cooperating well enough to boot the restored system.</p></div>
+      <div class="machine-stack" aria-label="Native execution stack"><div><small>HOST</small><strong>Linux x86-64</strong></div><i aria-hidden="true">↓</i><div><small>NATIVE RUNTIME</small><strong>Bemu-pdp11 / Basm</strong><span>Bear Basm + ld · direct Linux syscalls · no libc</span></div><i aria-hidden="true">↓</i><div><small>EMULATED MACHINE</small><strong>PDP-11/20 + KE11-A + RF/RK</strong><span>Console · clock · implemented device state</span></div><i aria-hidden="true">↓</i><div><small>GUEST</small><strong>Restored Unix V1 → historical sh / Jash/11</strong></div></div>
+      <p class="scope-note">SIMH and QEMU are not dependencies of the native Bemu runtime. The separate QEMU path boots x86-64 Linux and launches SIMH; QEMU does not provide a PDP-11 target. See the <a href="https://github.com/fermihart/unix-v1/blob/master/bemu-pdp11/README.md">emulator guide</a> and <a href="https://github.com/fermihart/unix-v1/blob/master/qemu/README.md">QEMU guide</a>.</p>
+    </section>
+
+    <section id="time" class="section wrap">
+      <p class="eyebrow">AN OPERATING SYSTEM DOES NOT LIVE IN RAM ALONE</p>
+      <h2>Do not rewind a video.<br><span class="gradient">Restore the machine.</span></h2>
+      <p class="lede">The next instruction depends on more than registers and memory. Pending IRQs, console FIFO contents, WAIT, poll scheduling, recorded input and the disk blocks just written all matter. Bemu's temporal engine captures the implemented machine and private media state, then reconstructs history through replay.</p>
+      <div class="triptych"><article><span>CHECKPOINT</span><h3>Keep a complete boundary.</h3><p>Snapshots are taken between scheduling cycles, not in the middle of an instruction or synchronous DMA operation.</p></article><article><span>REPLAY</span><h3>Use the recorded history.</h3><p>Historical navigation does not mix new keyboard input into the past. Continuing replays retained history before rejoining live capture.</p></article><article><span>PRIVATE MEDIA</span><h3>Leave the bases alone.</h3><p>Temporal modes open regular base images read-only and run against private versions. Restoring a checkpoint restores those versions too.</p></article></div>
+      <a class="capture" href="assets/time-travel.png"><img src="assets/time-travel.png" width="1280" height="900" loading="lazy" alt="Real Bemu monitor: the canonical hash changes after step 100 and returns to its original value after back 100"></a>
+      <p class="scope-note">The matching values are actual FNV witnesses from this captured session. They detect accidental corruption/divergence, not cryptographic authenticity or formal trace equivalence. The footer is a separate capture-driver assertion. The <a href="https://github.com/fermihart/unix-v1/blob/master/bemu-pdp11/docs/TIME_TRAVEL.md">temporal contract</a> defines exact counters, phases, capacities and verification rules.</p>
+    </section>
+
+    <section id="shell" class="section wrap">
+      <div class="section-heading"><div><p class="eyebrow">A NEW SHELL. INSIDE THE OLD UNIX.</p><h2>Useful ideas.<br><span class="gradient">Historical constraints.</span></h2></div><p class="lede">Jash/11 executes as a native PDP-11 program inside the restored kernel, using the V1 fork/exec/wait ABI. Not a host interpreter. Not a replacement for the historical shell.</p></div>
+      <a class="capture" href="assets/jash11-live.png"><img src="assets/jash11-live.png" width="1280" height="900" loading="lazy" alt="Actual Jash/11 session with quoted echo, redirection, file readback, completion lookup and session history"></a>
+      <div class="shell-grid"><div><b>Quoting and redirection</b><p>Literal arguments, input/output files, append, scripts and <code>source</code>.</p></div><div><b>Session usability</b><p>Bounded history, explicit recall, completion lookup and controlled console colors.</p></div><div><b>An 8 KiB budget</b><p>Initialized code/data fits inside its enforced budget in the historical 16 KiB user window.</p></div></div>
+      <p class="scope-note">This is an independently implemented V1 edition, not modern Jash feature parity or POSIX shell certification. No native pipes, job control or expansion are promised. The <a href="https://github.com/fermihart/unix-v1/blob/master/jash11/README.md">Jash/11 guide</a> documents the actual commands and bounds.</p>
+    </section>
+
+    <section id="start" class="section wrap start">
+      <p class="eyebrow">START WITH A MACHINE YOU CAN REWIND</p>
+      <h2>Switch it on.<br><span class="gradient">Follow the execution.</span></h2>
+      <p class="lede">On Linux x86-64, with compatible Bear Basm, GNU <code>ld</code> and the restoration's build tools:</p>
+      <pre class="code"><code>git clone --recurse-submodules https://github.com/fermihart/unix-v1.git
+cd unix-v1
+make run-bemu-time
+
+# At the host monitor:
+continue
+# Log in as root. Ctrl-A, release Ctrl, then M opens the monitor.
+snap
+step 10
+back 10
+regs
+continue</code></pre>
+      <p class="scope-note">Select the assembler with <code>BASM=/absolute/path/to/basm</code> if necessary. Ordinary build/install targets can replace generated working images; back them up before using those workflows. The temporal runtime never writes its supplied bases.</p>
+      <div class="paths"><article><h3>Native Bemu</h3><code>make run-bemu</code><p>Ordinary writable-disk execution.</p></article><article><h3>Native Jash/11</h3><code>make run-jash11</code><p>A separate image profile; run <code>/bin/jash</code> after login.</p></article><article><h3>Reference paths</h3><code>make run</code><p>SIMH directly, or <code>make run-qemu</code> for Linux/SIMH inside QEMU.</p></article></div>
+    </section>
+
+    <section id="verify" class="section wrap">
+      <p class="eyebrow">EXECUTABLE CHECKS, NOT DECORATIVE BADGES</p>
+      <h2>Read the code.<br><span class="gradient">Run the gates.</span></h2>
+      <p class="lede">CPU/device regressions, real Unix filesystem operations, full machine/media restoration, malformed-session checks, reverse/seek, verified replay and terminal cleanup all have executable tests. Jash/11 is exercised in Bemu and SIMH; the separate QEMU workflow is tested through actual nested boots.</p>
+      <pre class="code"><code>make test-bemu
+make test-time-travel
+make -C bemu-pdp11 test-time-commands
+make qualify</code></pre>
+      <p class="scope-note">The complete qualification battery repeats functional rounds three times and needs the documented host tools and a readable Linux kernel for QEMU/TCG. Missing prerequisites and failed required tests block approval. Logs and machine-readable evidence remain local and private. <a href="https://github.com/fermihart/unix-v1/blob/master/bemu-pdp11/README.md#regression-coverage">Requirements and coverage ↗</a></p>
+      <details class="evidence"><summary>Build this static page locally</summary><p>The page reuses the curated README captures; it does not duplicate media in the source repository. The builder needs only Python 3 and refuses nonempty output directories.</p><pre class="code"><code>python3 website/build.py --output _site
+python3 -m http.server --bind 127.0.0.1 --directory _site 8000</code></pre><p>To recapture execution, use <code>readme/generate_media.py</code> with its optional Pillow/pyte/font dependencies. Raw sessions and disks never belong in the public site.</p></details>
+    </section>
+
+    <section class="section wrap boundary">
+      <p class="eyebrow">THE LIMITS BELONG IN THE STORY</p>
+      <h2>Preserve the past.<br><span class="gradient">Do not invent the evidence.</span></h2>
+      <p class="lede">This is a supported reconstructed Unix V1 profile, not complete PDP-11 ISA/peripheral compatibility or physical-hardware qualification. Bemu does not implement TC11/paper-tape transfers or DC11 network sessions. Temporal v1 has no alternate-input branches, persistent checkpoint IDs, post-HALT monitoring, base writeback or arbitrary crash recovery.</p>
+      <p class="scope-note">Recordings contain sensitive guest state and finalize on clean exit. Owner-only mode is not encryption. Navigation cannot retract bytes already displayed on the host terminal or undo arbitrary host effects. The graphics are source-derived presentation, not hardware attestation.</p>
+      <div class="cta-row"><a class="button primary" href="https://github.com/fermihart/unix-v1">Explore the repository ↗</a><a class="button secondary" href="https://github.com/fermihart/unix-v1/tree/master/bemu-pdp11/docs">Read the specifications</a></div>
+      <p class="closing">Computing history does not have to stay behind glass.<br><strong>It can execute.</strong></p>
+    </section>
+  </main>
+
+  <footer class="wrap">
+    <a class="wordmark" href="#top">UNIX V1<span aria-hidden="true">∞</span></a>
+    <p>Local implementation and presentation: F E R M I ∞ H A R T · <a href="mailto:contact@fermihart.com">contact@fermihart.com</a></p>
+    <p>The original <a href="LICENSE">unix-v1 license</a> is retained unchanged. Historical authorship and third-party terms remain intact. <a href="https://github.com/fermihart/unix-v1/blob/master/CONTRIBUTIONS.md">Contribution scope</a> · <a href="https://github.com/fermihart/unix-v1/blob/master/CREDITS">Restoration credits</a>.</p>
+    <p>This product includes software developed or owned by Caldera International, Inc.</p>
+  </footer>
+  <script>
+  (function () {
+    'use strict';
+    var reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
+    document.querySelectorAll('[data-demo]').forEach(function (figure) {
+      var image = figure.querySelector('img');
+      var source = figure.querySelector('source');
+      var button = figure.querySelector('[data-toggle]');
+      var playing = !reduce.matches;
+      function show(play) {
+        playing = play;
+        var url = play ? image.dataset.animation : image.dataset.poster;
+        source.srcset = url;
+        image.src = url;
+        button.textContent = play ? 'Pause animation' : 'Play animation';
+        button.setAttribute('aria-pressed', String(play));
+      }
+      button.hidden = false;
+      show(playing);
+      button.addEventListener('click', function () { show(!playing); });
+      reduce.addEventListener('change', function (event) { if (event.matches) show(false); });
+    });
+  })();
+  </script>
+</body>
+</html>
