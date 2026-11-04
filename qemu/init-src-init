@@ -1,0 +1,24 @@
+#!/bin/busybox sh
+# Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+# License: original unix-v1 terms; see ../LICENSE in the source repository.
+#
+# /init - initramfs init for Unix V1 on QEMU guest
+# Boots minimal Linux, then launches SIMH PDP-11 with Unix V1.
+
+# install applets first (provides mount, sh, etc.)
+/bin/busybox --install -s /bin
+
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t devtmpfs none /dev 2>/dev/null || /bin/busybox mount -t devtmpfs none /dev
+
+echo ""
+echo "=== unix-v1 QEMU guest ==="
+echo "Minimal Linux booted. Starting PDP-11 SIMH + Unix V1..."
+echo ""
+
+cd /unix
+
+# Run PDP-11 emulator in foreground on console.
+# stdin/stdout = serial console (ttyS0 via -nographic).
+exec /bin/pdp11 /unix/simh-qemu.cfg

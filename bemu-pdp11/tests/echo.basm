@@ -1,0 +1,12 @@
+/ Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+/ License: original unix-v1 terms; see ../../LICENSE.
+/
+/ echo test for bemu-pdp11 console: reads one char, writes it back, loops.
+halt = 0
+    mov $1000,sp
+    mov $177560,r1
+1:  tstb (r1)
+    bpl 1b
+    movb 2(r1),r0
+    movb r0,6(r1)
+    br 1b

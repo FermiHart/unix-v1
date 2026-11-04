@@ -1,0 +1,41 @@
+; Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+; License: original unix-v1 terms; see ../../LICENSE.
+;
+; cpu3.basm -- EAE self-test for bemu-pdp11 (hand-encoded PDP-11 words,
+; assembled with Bear Basm -f bin). R0=52 oct on success, 0 on fail.
+; Encodings cross-checked against SIMH decode ranges + BOOT traces.
+BITS 32
+section .text
+    dw 0x15C6, 0x0200     ; mov $1000,sp
+    dw 0x15C0, 0x0006     ; mov $6,r0
+    dw 0x7017, 0x0007     ; mul $7,r0 -> (r0,r1)=(42,0)
+    dw 0x25C0, 0x002A     ; cmp $52,r0
+    dw 0x0229             ; bne fail
+    dw 0x0BC1             ; tst r1
+    dw 0x0227             ; bne fail
+    dw 0x0A00             ; clr r0
+    dw 0x15C1, 0x002A     ; mov $52,r1 (42.)
+    dw 0x7217, 0x0006     ; div $6,r0 -> r0=7, r1=0
+    dw 0x25C0, 0x0007     ; cmp $7,r0
+    dw 0x021F             ; bne fail
+    dw 0x0BC1             ; tst r1
+    dw 0x021D             ; bne fail
+    dw 0x15C0, 0x0001     ; mov $1,r0
+    dw 0x7417, 0x0003     ; ash $3,r0 -> 8
+    dw 0x25C0, 0x0008     ; cmp $10,r0
+    dw 0x0216             ; bne fail
+    dw 0x15C0, 0x0008     ; mov $10,r0 (8.)
+    dw 0x7417, 0xFFFF     ; ash $-1,r0 -> 4
+    dw 0x25C0, 0x0004     ; cmp $4,r0
+    dw 0x020F             ; bne fail
+    dw 0x15C2, 0x0000     ; mov $0,r2
+    dw 0x15C3, 0x4000     ; mov $40000,r3
+    dw 0x7697, 0x0001     ; ashc $1,r2 -> (r2,r3)=(0,0x8000)
+    dw 0x25C2, 0x0000     ; cmp $0,r2
+    dw 0x0206             ; bne fail
+    dw 0x25C3, 0x8000     ; cmp $100000,r3
+    dw 0x0203             ; bne fail
+    dw 0x15C0, 0x002A     ; mov $52,r0 (magic 42.)
+    dw 0x0000             ; halt
+    dw 0x0A00             ; fail: clr r0
+    dw 0x0000             ; halt

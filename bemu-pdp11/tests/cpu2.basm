@@ -1,0 +1,94 @@
+/ Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+/ License: original unix-v1 terms; see ../../LICENSE.
+/
+/ cpu2 self-test for bemu-pdp11: R0=52 oct on success, 0 on fail
+/ EAE (mul/div/ash) not encodable by this as: covered by hand-built cpu3.
+halt = 0
+    mov $1000,sp
+    mov $100,r0
+    mov r0,r1
+    add $1,r1
+    sub $1,r1
+    cmp $100,r1
+    bne fail
+    bit $140,r1
+    beq fail
+    bis $1,r1
+    bic $1,r1
+    cmp $100,r1
+    bne fail
+    mov $177777,r4
+    add $1,r4
+    bne fail
+    bcc fail
+    sub $1,r4
+    bcc fail
+    mov $5,r2
+1:  sob r2,1b
+    tst r2
+    bne fail
+    jsr pc,2f
+    jmp 3f
+2:  mov $7,r3
+    rts pc
+3:  cmp $7,r3
+    bne fail
+    mov $177777,r4
+    cmp $1,r4
+    blt fail
+    bge 6f
+    jmp fail
+6:  bgt 7f
+    jmp fail
+7:  mov $2,r4
+    cmp $1,r4
+    bhi fail
+    blos 8f
+    jmp fail
+8:  mov $1,r4
+    cmp $2,r4
+    blos fail
+    bhi 9f
+    jmp fail
+9:  jmp 5f
+    jmp fail
+5:  clr r4
+    bne fail
+    com r4
+    bpl fail
+    inc r4
+    bne fail
+    dec r4
+    bpl fail
+    neg r4
+    dec r4
+    bne fail
+    tst r4
+    bne fail
+    movb $252,r5
+    bmi 6f
+    jmp fail
+6:  cmpb $252,r5
+    bne fail
+4:  mov $10,r0
+    asr r0
+    bcs fail
+    bvs fail
+    bmi fail
+    beq fail
+    cmp $4,r0
+    bne fail
+    asl r0
+    bcs fail
+    bvs fail
+    cmp $10,r0
+    bne fail
+    tst r0
+    ror r0
+    cmp $4,r0
+    bne fail
+    mov $52,r0
+    halt
+fail:
+    clr r0
+    halt

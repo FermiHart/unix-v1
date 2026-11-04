@@ -1,0 +1,2318 @@
+; Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+; License: original unix-v1 terms; see ../../LICENSE.
+;
+; Included in the emulator translation unit. All runtime logic is Basm.
+; Snapshots contain guest bytes, never host pointers, fds, or terminal state.
+TT_CPU_SIZE equ guest_cpu_end-pdp_mem
+TT_DEV_SIZE equ guest_devices_end-irq_clk
+TT_EXTRA equ TT_CPU_SIZE+TT_DEV_SIZE
+TT_STATE_SIZE equ TT_EXTRA+37
+TT_RF_MAX equ 1048576
+TT_RK_MAX equ 4194304
+TT_CON_MAX equ 1048576
+TT_EVENTS_MAX equ 1048576
+TT_SLOT_SHIFT equ 23
+TT_FNV equ 0xCBF29CE484222325
+
+section .bss
+tt_enabled: resb 1
+tt_ready: resb 1
+tt_pause: resb 1
+tt_host_only: resb 1
+tt_user_stop: resb 1
+tt_initial_pause: resb 1
+tt_replay: resb 1
+tt_failed: resb 1
+tt_mute: resb 1
+tt_historical: resb 1
+tt_poll_active: resb 1
+tt_verified: resb 1
+tt_seek_active: resb 1
+tt_stage: resd 1
+tt_seq: resq 1
+tt_insn: resq 1
+tt_cursor: resq 1
+tt_count: resq 1
+tt_chain: resq 1
+tt_rf_size: resq 1
+tt_rk_size: resq 1
+tt_console_len: resq 1
+tt_console_highwater: resq 1          ; retained immutable output-prefix cache
+tt_poll_count: resd 1
+tt_goal_kind: resd 1
+tt_goal: resq 1
+tt_next_slot: resd 1
+tt_next_id: resq 1
+tt_saved_id: resq 1
+tt_record_path: resq 1
+tt_replay_path: resq 1
+tt_file_fd: resd 1
+tt_file_open: resb 1
+tt_file_size: resq 1
+tt_front_valid: resb 1
+tt_front_seq: resq 1
+tt_front_insn: resq 1
+tt_front_hash: resq 1
+tt_auto_next: resq 1
+tt_key: resb 1
+tt_cmd: resb 96
+tt_arg: resq 1
+tt_cmd_overflow: resb 1
+tt_mon_prefix: resb 1
+tt_hex: resb 16
+tt_number: resq 1
+tt_state: resb TT_STATE_SIZE
+tt_meta: resb 576                    ; nine metadata rows, 64 bytes each
+tt_slots: resb 75497472              ; 8 checkpoints + pinned live frontier
+tt_rf_base: resb TT_RF_MAX
+tt_rk_base: resb TT_RK_MAX
+tt_rf_work: resb TT_RF_MAX
+tt_rk_work: resb TT_RK_MAX
+tt_console: resb TT_CON_MAX
+tt_console_view: resb 4096
+tt_frames: resb 33554432
+tt_frame: resb 32
+tt_header: resb 128
+tt_footer: resb 80
+
+section .text
+; Option parsing runs before r14/r15 become guest-memory pointers.
+tt_parse_option:
+    mov     rsi, [r13+r14*8]
+    add     rsi, 2
+    lea     rdi, [rel tt_opt_time]
+    call    streq
+    test    eax, eax
+    jz      .try_record
+    jmp     .time
+.try_record:
+    mov     rsi, [r13+r14*8]
+    add     rsi, 2
+    lea     rdi, [rel tt_opt_record]
+    call    streq
+    test    eax, eax
+    jz      .try_replay
+    jmp     .record
+.try_replay:
+    mov     rsi, [r13+r14*8]
+    add     rsi, 2
+    lea     rdi, [rel tt_opt_replay]
+    call    streq
+    test    eax, eax
+    jz      .try_help
+    jmp     .replay
+.try_help:
+    mov     rsi, [r13+r14*8]
+    add     rsi, 2
+    lea     rdi, [rel tt_opt_help]
+    call    streq
+    test    eax, eax
+    jnz     .help
+    xor     eax, eax
+    ret
+.help:
+    mov     eax, 1
+    mov     edi, 2
+    lea     rsi, [rel usagemsg]
+    mov     edx, usagemsg_len
+    syscall
+    xor     edi, edi
+    jmp     exit_clean
+.time:
+    mov     byte [rel tt_enabled], 1
+    mov     byte [rel tt_initial_pause], 1
+    mov     eax, 1
+    ret
+.record:
+    cmp     qword [rel tt_record_path], 0
+    jne     .bad
+    cmp     qword [rel tt_replay_path], 0
+    jne     .bad
+    inc     r14
+    cmp     r14, r12
+    jae     .bad
+    mov     rax, [r13+r14*8]
+    mov     [rel tt_record_path], rax
+    mov     byte [rel tt_enabled], 1
+    mov     eax, 1
+    ret
+.replay:
+    cmp     qword [rel tt_record_path], 0
+    jne     .bad
+    cmp     qword [rel tt_replay_path], 0
+    jne     .bad
+    inc     r14
+    cmp     r14, r12
+    jae     .bad
+    mov     rax, [r13+r14*8]
+    mov     [rel tt_replay_path], rax
+    mov     byte [rel tt_enabled], 1
+    mov     byte [rel tt_replay], 1
+    mov     eax, 1
+    ret
+.bad:
+    jmp     usage_err
+
+tt_disk_open_mode:
+    mov     rsi, 2
+    cmp     byte [rel tt_enabled], 0
+    je      .done
+    mov     rsi, 0x800                    ; RDONLY|NONBLOCK: reject FIFOs at fstat
+.done:
+    ret
+
+tt_start_replay:
+    cmp     byte [rel tt_replay], 0
+    jne     .replay
+    xor     eax, eax
+    ret
+.replay:
+    cmp     qword [rel arg_rf], 0
+    je      .no_images
+    jmp     usage_err
+.no_images:
+    cmp     byte [rel test_mode], 0
+    je      .load
+    jmp     usage_err
+.load:
+    call    tt_load_log
+    mov     dword [rel tt_next_slot], 1
+    mov     qword [rel tt_next_id], 1
+    mov     qword [rel tt_auto_next], 100000
+    mov     al, [rel tt_initial_pause]
+    mov     [rel tt_pause], al
+    xor     edi, edi
+    call    tt_save_slot
+    mov     byte [rel tt_ready], 1
+    lea     rsi, [rel tt_intro]
+    call    tt_puts
+    lea     rsi, [rel tt_replay_text]
+    call    tt_puts
+    mov     eax, 1
+    ret
+
+; Fixed-buffer copy: rsi source, rdi destination, rcx byte count.
+tt_copy:
+    mov     rdx, rcx
+    shr     rcx, 3
+    jz      .tail
+.quad:
+    mov     rax, [rsi]
+    mov     [rdi], rax
+    add     rsi, 8
+    add     rdi, 8
+    dec     rcx
+    jnz     .quad
+.tail:
+    and     edx, 7
+    mov     ecx, edx
+    test    ecx, ecx
+    jz      .done
+.byte:
+    mov     al, [rsi]
+    mov     [rdi], al
+    inc     rsi
+    inc     rdi
+    dec     ecx
+    jnz     .byte
+.done:
+    ret
+
+; FNV-1a-64 is an accidental-corruption witness, not authentication.
+; rax seed, rsi bytes, rcx length -> rax; clobbers rdx,r8.
+tt_hash_bytes:
+    mov     rdx, 0x100000001B3
+    test    rcx, rcx
+    jz      .done
+.loop:
+    movzx   r8d, byte [rsi]
+    xor     rax, r8
+    imul    rax, rdx
+    inc     rsi
+    dec     rcx
+    jnz     .loop
+.done:
+    ret
+
+tt_pack:
+    lea     rsi, [rel pdp_mem]
+    lea     rdi, [rel tt_state]
+    mov     ecx, TT_CPU_SIZE
+    call    tt_copy
+    lea     rsi, [rel irq_clk]
+    mov     ecx, TT_DEV_SIZE
+    call    tt_copy
+    mov     al, [rel waitflag]
+    mov     [rdi], al
+    mov     eax, [rel tt_poll_count]
+    mov     [rdi+1], eax
+    mov     rax, [rel tt_seq]
+    mov     [rdi+5], rax
+    mov     rax, [rel tt_insn]
+    mov     [rdi+13], rax
+    mov     rax, [rel tt_cursor]
+    mov     [rdi+21], rax
+    mov     rax, [rel tt_console_len]
+    mov     [rdi+29], rax
+    ret
+
+tt_unpack:
+    lea     rsi, [rel tt_state]
+    lea     rdi, [rel pdp_mem]
+    mov     ecx, TT_CPU_SIZE
+    call    tt_copy
+    lea     rdi, [rel irq_clk]
+    mov     ecx, TT_DEV_SIZE
+    call    tt_copy
+    mov     al, [rsi]
+    mov     [rel waitflag], al
+    mov     eax, [rsi+1]
+    mov     [rel tt_poll_count], eax
+    mov     rax, [rsi+5]
+    mov     [rel tt_seq], rax
+    mov     rax, [rsi+13]
+    mov     [rel tt_insn], rax
+    mov     rax, [rsi+21]
+    mov     [rel tt_cursor], rax
+    mov     rax, [rsi+29]
+    mov     [rel tt_console_len], rax
+    mov     qword [rel last_tick], 0
+    ret
+
+tt_hash_current:
+    call    tt_pack
+    mov     rax, TT_FNV
+    lea     rsi, [rel tt_state]
+    mov     ecx, TT_STATE_SIZE
+    call    tt_hash_bytes
+    lea     rsi, [rel tt_rf_work]
+    mov     rcx, [rel tt_rf_size]
+    call    tt_hash_bytes
+    lea     rsi, [rel tt_rk_work]
+    mov     rcx, [rel tt_rk_size]
+    call    tt_hash_bytes
+    lea     rsi, [rel tt_console]
+    mov     rcx, [rel tt_console_len]
+    jmp     tt_hash_bytes
+
+; Exact regular-file reads; dimensions are validated before these calls.
+tt_read_full:
+    push    r12
+    mov     r12d, edi
+.again:
+    test    rdx, rdx
+    jz      .done
+    xor     eax, eax
+    mov     edi, r12d
+    syscall
+    cmp     rax, -4
+    je      .again
+    test    rax, rax
+    jg      .got
+    jmp     tt_error
+.got:
+    add     rsi, rax
+    sub     rdx, rax
+    jmp     .again
+.done:
+    pop     r12
+    ret
+
+tt_write_full:
+    push    r12
+    mov     r12d, edi
+.again:
+    test    rdx, rdx
+    jz      .done
+    mov     eax, 1
+    mov     edi, r12d
+    syscall
+    cmp     rax, -4
+    je      .again
+    test    rax, rax
+    jg      .got
+    jmp     tt_error
+.got:
+    add     rsi, rax
+    sub     rdx, rax
+    jmp     .again
+.done:
+    pop     r12
+    ret
+
+; edi fd, rsi destination, rdx maximum, rcx alignment mask -> rax bytes.
+tt_load_disk:
+    push    r12
+    push    r13
+    push    rbx
+    push    rbp
+    mov     r12d, edi
+    mov     r13, rsi
+    mov     rbx, rdx
+    mov     rbp, rcx
+    mov     eax, 5
+    lea     rsi, [rel statbuf]
+    syscall
+    test    rax, rax
+    jz      .stat_ok
+    jmp     tt_error
+.stat_ok:
+    mov     eax, [rel statbuf+24]
+    and     eax, 0xF000
+    cmp     eax, 0x8000
+    je      .regular
+    jmp     tt_error
+.regular:
+    mov     rdx, [rel statbuf+48]
+    test    rdx, rdx
+    jnz     .nonempty
+    jmp     tt_error
+.nonempty:
+    cmp     rdx, rbx
+    jbe     .bounded
+    jmp     tt_error
+.bounded:
+    mov     rax, rdx
+    and     rax, rbp
+    jz      .aligned
+    jmp     tt_error
+.aligned:
+    mov     rbx, rdx
+    mov     edi, r12d
+    mov     rsi, r13
+    call    tt_read_full
+    mov     rax, rbx
+    pop     rbp
+    pop     rbx
+    pop     r13
+    pop     r12
+    ret
+
+tt_init:
+    cmp     byte [rel tt_enabled], 0
+    jne     .enabled
+    ret
+.enabled:
+    cmp     qword [rel arg_rf], 0
+    je      .no_disks
+    mov     edi, [rel rf_fd]
+    lea     rsi, [rel tt_rf_base]
+    mov     edx, TT_RF_MAX
+    mov     ecx, 1
+    call    tt_load_disk
+    mov     [rel tt_rf_size], rax
+    mov     rcx, rax
+    lea     rsi, [rel tt_rf_base]
+    lea     rdi, [rel tt_rf_work]
+    call    tt_copy
+    mov     edi, [rel rk_fd]
+    lea     rsi, [rel tt_rk_base]
+    mov     edx, TT_RK_MAX
+    mov     ecx, 511
+    call    tt_load_disk
+    mov     [rel tt_rk_size], rax
+    mov     rcx, rax
+    lea     rsi, [rel tt_rk_base]
+    lea     rdi, [rel tt_rk_work]
+    call    tt_copy
+.no_disks:
+    mov     dword [rel tt_poll_count], 1024
+    mov     dword [rel tt_next_slot], 1
+    mov     qword [rel tt_next_id], 1
+    mov     qword [rel tt_auto_next], 100000
+    mov     al, [rel tt_initial_pause]
+    mov     [rel tt_pause], al
+    xor     edi, edi
+    call    tt_save_slot
+    call    tt_make_header
+    cmp     qword [rel tt_record_path], 0
+    je      .intro
+    mov     eax, 2
+    mov     rdi, [rel tt_record_path]
+    mov     esi, 0xC1                     ; WRONLY|CREAT|EXCL, never truncate
+    mov     edx, 0x180                    ; 0600, sensitive session contents
+    syscall
+    test    rax, rax
+    jns     .record_open
+    cmp     rax, -17
+    jne     .record_failed
+    lea     rsi, [rel tt_exists_text]
+    call    tt_puts
+.record_failed:
+    jmp     tt_error
+.record_open:
+    mov     [rel tt_file_fd], eax
+    mov     byte [rel tt_file_open], 1
+.intro:
+    mov     byte [rel tt_ready], 1
+    lea     rsi, [rel tt_intro]
+    call    tt_puts
+    cmp     qword [rel tt_record_path], 0
+    jne     .persistent
+    lea     rsi, [rel tt_volatile_text]
+    call    tt_puts
+    ret
+.persistent:
+    lea     rsi, [rel tt_sensitive_text]
+    call    tt_puts
+    ret
+
+; Disk helpers preserve the live DMA registers r8/r9/r12/r13/r14/r15.
+; edi = 0 RF / 1 RK; r10 = byte offset; data passes through io_word.
+tt_disk_address:
+    lea     rsi, [rel tt_rf_work]
+    mov     rdx, [rel tt_rf_size]
+    test    edi, edi
+    jz      .selected
+    lea     rsi, [rel tt_rk_work]
+    mov     rdx, [rel tt_rk_size]
+.selected:
+    mov     rax, r10
+    add     rax, 2
+    cmp     rax, rdx
+    jbe     .ok
+    jmp     tt_error
+.ok:
+    ret
+tt_disk_read:
+    call    tt_disk_address
+    mov     ax, [rsi+r10]
+    mov     [rel io_word], ax
+    mov     eax, 2
+    ret
+tt_disk_write:
+    call    tt_disk_address
+    mov     ax, [rel io_word]
+    mov     [rsi+r10], ax
+    mov     eax, 2
+    ret
+
+tt_slot_address:
+    mov     eax, edi
+    shl     rax, TT_SLOT_SHIFT
+    lea     rdx, [rel tt_slots]
+    add     rax, rdx
+    ret
+tt_meta_address:
+    mov     eax, edi
+    shl     rax, 6
+    lea     rdx, [rel tt_meta]
+    add     rax, rdx
+    ret
+
+tt_save_slot:
+    push    r12
+    push    r13
+    mov     r13d, edi
+    call    tt_hash_current
+    push    rax
+    mov     edi, r13d
+    call    tt_slot_address
+    mov     r12, rax
+    mov     rdi, r12
+    lea     rsi, [rel tt_state]
+    mov     ecx, TT_STATE_SIZE
+    call    tt_copy
+    lea     rsi, [rel tt_rf_work]
+    mov     rcx, [rel tt_rf_size]
+    call    tt_copy
+    lea     rsi, [rel tt_rk_work]
+    mov     rcx, [rel tt_rk_size]
+    call    tt_copy
+    mov     edi, r13d
+    call    tt_meta_address
+    xor     ecx, ecx
+    test    r13d, r13d
+    jz      .id
+    cmp     r13d, 8
+    jne     .public_id
+    mov     rcx, -1
+    jmp     .id
+.public_id:
+    mov     rcx, [rel tt_next_id]
+    add     qword [rel tt_next_id], 1
+.id:
+    mov     [rax], rcx
+    mov     [rel tt_saved_id], rcx
+    mov     qword [rax+8], 1
+    mov     rcx, [rel tt_seq]
+    mov     [rax+16], rcx
+    mov     rcx, [rel tt_insn]
+    mov     [rax+24], rcx
+    mov     rcx, [rel tt_cursor]
+    mov     [rax+32], rcx
+    pop     rcx
+    mov     [rax+40], rcx
+    pop     r13
+    pop     r12
+    ret
+
+tt_restore_slot:
+    push    r12
+    push    r13
+    mov     r13d, edi
+    call    tt_slot_address
+    mov     r12, rax
+    mov     rsi, r12
+    lea     rdi, [rel tt_state]
+    mov     ecx, TT_STATE_SIZE
+    call    tt_copy
+    call    tt_unpack
+    mov     rsi, r12
+    add     rsi, TT_STATE_SIZE
+    lea     rdi, [rel tt_rf_work]
+    mov     rcx, [rel tt_rf_size]
+    call    tt_copy
+    lea     rdi, [rel tt_rk_work]
+    mov     rcx, [rel tt_rk_size]
+    call    tt_copy
+    call    tt_hash_current
+    push    rax
+    mov     edi, r13d
+    call    tt_meta_address
+    pop     rcx
+    cmp     rcx, [rax+40]
+    je      .ok
+    jmp     tt_error
+.ok:
+    pop     r13
+    pop     r12
+    ret
+
+tt_capture_input:
+    cmp     byte [rel tt_poll_active], 0
+    jne     .capture
+    ret
+.capture:
+    push    rcx
+    push    rdx
+    movzx   ecx, byte [rel tt_frame+10]
+    cmp     ecx, 2
+    jb      .bounded
+    jmp     tt_error
+.bounded:
+    lea     rdx, [rel tt_frame+11]
+    mov     [rdx+rcx], al
+    inc     ecx
+    mov     [rel tt_frame+10], cl
+    pop     rdx
+    pop     rcx
+    ret
+
+tt_console_byte:
+    cmp     byte [rel tt_enabled], 0
+    jne     .enabled
+    ret
+.enabled:
+    push    rcx
+    push    rdx
+    mov     rcx, [rel tt_console_len]
+    cmp     rcx, TT_CON_MAX
+    jb      .bounded
+    jmp     tt_error
+.bounded:
+    lea     rdx, [rel tt_console]
+    cmp     rcx, [rel tt_console_highwater]
+    jae     .append
+    cmp     al, [rdx+rcx]
+    je      .advance
+    jmp     tt_error                      ; never overwrite divergent recorded output
+.append:
+    cmp     rcx, [rel tt_console_highwater]
+    je      .store
+    jmp     tt_error
+.store:
+    mov     [rdx+rcx], al
+    add     qword [rel tt_console_highwater], 1
+.advance:
+    inc     rcx
+    mov     [rel tt_console_len], rcx
+    pop     rdx
+    pop     rcx
+    ret
+
+tt_save_ring:
+    mov     edi, [rel tt_next_slot]
+    call    tt_save_slot
+    add     dword [rel tt_next_slot], 1
+    cmp     dword [rel tt_next_slot], 8
+    jb      .done
+    mov     dword [rel tt_next_slot], 1
+.done:
+    ret
+
+tt_save_frontier:
+    cmp     byte [rel tt_replay], 0
+    jne     .done
+    cmp     byte [rel tt_historical], 0
+    jne     .done
+    mov     edi, 8
+    call    tt_save_slot
+    mov     rax, [rel tt_seq]
+    mov     [rel tt_front_seq], rax
+    mov     rax, [rel tt_insn]
+    mov     [rel tt_front_insn], rax
+    mov     edi, 8
+    call    tt_meta_address
+    mov     rcx, [rax+40]
+    mov     [rel tt_front_hash], rcx
+    mov     byte [rel tt_front_valid], 1
+.done:
+    ret
+
+tt_poll:
+    cmp     byte [rel tt_replay], 0
+    jne     tt_apply_poll
+    cmp     byte [rel tt_historical], 0
+    jne     tt_apply_poll
+    mov     qword [rel tt_frame], 0
+    mov     qword [rel tt_frame+8], 0
+    mov     qword [rel tt_frame+16], 0
+    mov     qword [rel tt_frame+24], 0
+    mov     rax, [rel tt_seq]
+    mov     [rel tt_frame], rax
+    mov     byte [rel tt_poll_active], 1
+    call    poll_io
+    jmp     tt_end_poll
+
+tt_end_poll:
+    mov     al, [rel lks]
+    mov     ah, [rel irq_clk]
+    mov     [rel tt_frame+8], ax
+    mov     byte [rel tt_poll_active], 0
+    mov     rax, [rel tt_chain]
+    lea     rsi, [rel tt_frame]
+    mov     ecx, 24
+    call    tt_hash_bytes
+    mov     [rel tt_chain], rax
+    mov     [rel tt_frame+24], rax
+    mov     rax, [rel tt_count]
+    cmp     rax, TT_EVENTS_MAX
+    jb      .bounded
+    jmp     tt_error
+.bounded:
+    shl     rax, 5
+    lea     rdi, [rel tt_frames]
+    add     rdi, rax
+    lea     rsi, [rel tt_frame]
+    mov     ecx, 32
+    call    tt_copy
+    add     qword [rel tt_count], 1
+    mov     rax, [rel tt_count]
+    mov     [rel tt_cursor], rax
+    ret
+
+tt_apply_poll:
+    push    r12
+    mov     rax, [rel tt_cursor]
+    cmp     rax, [rel tt_count]
+    jb      .available
+    jmp     tt_error
+.available:
+    shl     rax, 5
+    lea     r12, [rel tt_frames]
+    add     r12, rax
+    mov     rax, [rel tt_seq]
+    cmp     rax, [r12]
+    je      .position
+    jmp     tt_error
+.position:
+    mov     al, [r12+8]
+    mov     [rel lks], al
+    mov     al, [r12+9]
+    mov     [rel irq_clk], al
+    cmp     byte [r12+10], 0
+    je      .consumed
+    mov     al, [r12+11]
+    call    con_input_byte
+    cmp     byte [r12+10], 2
+    jne     .consumed
+    mov     al, [r12+12]
+    call    con_input_byte
+.consumed:
+    add     qword [rel tt_cursor], 1
+    pop     r12
+    cmp     byte [rel tt_replay], 0
+    je      .done
+    cmp     qword [rel tt_footer+56], 1
+    jne     .done
+    mov     rax, [rel tt_seq]
+    cmp     rax, [rel tt_footer+16]
+    jne     .done
+    jmp     tt_stop_verified
+.done:
+    ret
+
+; In replay/history, real input is reserved for host controls, never guest data.
+tt_control_poll:
+    xor     eax, eax
+    xor     edi, edi
+    lea     rsi, [rel in_byte]
+    mov     edx, 1
+    syscall
+    cmp     rax, 1
+    jne     .done
+    mov     byte [rel tt_host_only], 1
+    mov     al, [rel in_byte]
+    call    host_input_byte
+    mov     byte [rel tt_host_only], 0
+.done:
+    ret
+
+; rax target, edi 1=boundary / 2=instruction count. Use a strictly earlier
+; instruction checkpoint so reverse-step reaches the first boundary after
+; the preceding instruction, rather than an arbitrary later IRQ/WAIT cycle.
+tt_begin_seek:
+    push    r12
+    push    r13
+    push    rbx
+    mov     [rel tt_goal], rax
+    mov     [rel tt_goal_kind], edi
+    xor     r12d, r12d
+    xor     ebx, ebx
+    mov     r13d, 1
+.candidate:
+    mov     edi, r13d
+    call    tt_meta_address
+    cmp     qword [rax+8], 1
+    jne     .next
+    cmp     dword [rel tt_goal_kind], 1
+    jne     .insn
+    mov     rcx, [rax+16]
+    cmp     rcx, [rel tt_goal]
+    ja      .next
+    jmp     .position
+.insn:
+    mov     rcx, [rax+24]
+    cmp     rcx, [rel tt_goal]
+    jae     .next
+.position:
+    mov     rcx, [rax+16]
+    cmp     rcx, rbx
+    jb      .next
+    mov     rbx, rcx
+    mov     r12d, r13d
+.next:
+    inc     r13d
+    cmp     r13d, 8
+    jb      .candidate
+    mov     edi, r12d
+    call    tt_restore_slot
+    cmp     byte [rel tt_replay], 0
+    jne     .mode
+    mov     byte [rel tt_historical], 1
+.mode:
+    mov     byte [rel tt_mute], 1
+    mov     byte [rel tt_pause], 0
+    pop     rbx
+    pop     r13
+    pop     r12
+    ret
+
+; One canonical cycle. All monitor operations run before poll/IRQ/fetch.
+tt_cycle:
+.boundary:
+    mov     dword [rel tt_stage], 0
+    cmp     dword [rel tt_goal_kind], 0
+    je      .pause_test
+    cmp     dword [rel tt_goal_kind], 1
+    jne     .instruction_goal
+    mov     rax, [rel tt_seq]
+    jmp     .goal_test
+.instruction_goal:
+    mov     rax, [rel tt_insn]
+.goal_test:
+    cmp     rax, [rel tt_goal]
+    jb      .pause_test
+    mov     dword [rel tt_goal_kind], 0
+    mov     byte [rel tt_pause], 1
+.pause_test:
+    cmp     byte [rel tt_pause], 0
+    je      .run
+    call    tt_save_frontier
+    call    tt_monitor
+    jmp     .boundary
+.run:
+    cmp     byte [rel tt_replay], 0
+    je      .history
+    cmp     qword [rel tt_footer+56], 0
+    jne     .history
+    mov     rax, [rel tt_seq]
+    cmp     rax, [rel tt_footer+16]
+    jne     .history
+    jmp     tt_stop_verified
+.history:
+    cmp     byte [rel tt_historical], 0
+    je      .checkpoint
+    mov     rax, [rel tt_seq]
+    cmp     rax, [rel tt_front_seq]
+    jne     .checkpoint
+    call    tt_hash_current
+    cmp     rax, [rel tt_front_hash]
+    je      .frontier_hash
+    jmp     tt_error
+.frontier_hash:
+    mov     rax, [rel tt_cursor]
+    cmp     rax, [rel tt_count]
+    je      .frontier_cursor
+    jmp     tt_error
+.frontier_cursor:
+    mov     byte [rel tt_historical], 0
+    mov     byte [rel tt_mute], 0
+    mov     qword [rel last_tick], 0
+.checkpoint:
+    mov     rax, [rel tt_seq]
+    cmp     rax, 1000000000
+    jb      .cycle_bounded
+    jmp     tt_error
+.cycle_bounded:
+    cmp     rax, [rel tt_auto_next]
+    jb      .host_controls
+    cmp     byte [rel tt_historical], 0
+    jne     .host_controls
+    call    tt_save_ring
+    mov     rax, [rel tt_seq]
+    add     rax, 100000
+    mov     [rel tt_auto_next], rax
+.host_controls:
+    cmp     byte [rel tt_replay], 0
+    jne     .control_test
+    cmp     byte [rel tt_historical], 0
+    je      .poll_test
+.control_test:
+    mov     eax, [rel tt_poll_count]
+    cmp     eax, 1
+    je      .control
+    cmp     byte [rel waitflag], 0
+    je      .poll_test
+.control:
+    call    tt_control_poll
+.poll_test:
+    cmp     byte [rel waitflag], 0
+    jne     .poll
+    sub     dword [rel tt_poll_count], 1
+    jnz     .irq
+    mov     dword [rel tt_poll_count], 1024
+.poll:
+    mov     dword [rel tt_stage], 1
+    call    tt_poll
+.irq:
+    call    check_irq
+    test    eax, eax
+    jnz     .no_fetch
+    cmp     byte [rel waitflag], 0
+    jne     .wait
+    add     qword [rel tt_seq], 1
+    add     qword [rel tt_insn], 1
+    mov     dword [rel tt_stage], 2
+    xor     eax, eax
+    ret
+.wait:
+    cmp     byte [rel tt_replay], 0
+    jne     .no_fetch
+    cmp     byte [rel tt_historical], 0
+    jne     .no_fetch
+    call    tt_sleep
+.no_fetch:
+    add     qword [rel tt_seq], 1
+    mov     eax, 1
+    ret
+
+tt_sleep:
+    sub     rsp, 16
+    mov     qword [rsp], 0
+    mov     qword [rsp+8], 1000000
+    mov     eax, 35
+    mov     rdi, rsp
+    xor     esi, esi
+    syscall
+    add     rsp, 16
+    ret
+
+tt_finish:
+    push    r12
+    mov     r12, rdi
+    cmp     byte [rel tt_failed], 0
+    je      .mode
+    mov     r12, 1
+    jmp     .done
+.mode:
+    cmp     byte [rel tt_replay], 0
+    je      .record
+    cmp     byte [rel tt_verified], 0
+    jne     .done
+    cmp     byte [rel tt_user_stop], 0
+    je      .guest_end
+    lea     rsi, [rel tt_interrupted]
+    call    tt_puts
+    jmp     .done
+.guest_end:
+    cmp     qword [rel tt_footer+56], 2
+    je      .end_kind
+    jmp     tt_error
+.end_kind:
+    cmp     r12, [rel tt_footer+48]
+    je      .end_status
+    jmp     tt_error
+.end_status:
+    call    tt_verify_end
+    jmp     .done
+.record:
+    cmp     byte [rel tt_historical], 0
+    je      .pending
+    cmp     byte [rel tt_front_valid], 0
+    jne     .restore_front
+    jmp     tt_error
+.restore_front:
+    mov     edi, 8
+    call    tt_restore_slot
+    mov     dword [rel tt_stage], 0
+    mov     byte [rel tt_historical], 0
+.pending:
+    cmp     byte [rel tt_poll_active], 0
+    je      .export_test
+    call    tt_end_poll
+.export_test:
+    cmp     byte [rel tt_file_open], 0
+    je      .done
+    mov     rdi, r12
+    call    tt_export_log
+.done:
+    mov     rax, r12
+    pop     r12
+    ret
+
+tt_make_header:
+    lea     rdi, [rel tt_header]
+    mov     ecx, 16
+    xor     eax, eax
+.clear:
+    mov     [rdi], rax
+    add     rdi, 8
+    dec     ecx
+    jnz     .clear
+    mov     rax, 0x3130474F4C545442       ; BTTLOG01
+    mov     [rel tt_header], rax
+    mov     qword [rel tt_header+8], 1
+    mov     qword [rel tt_header+16], TT_STATE_SIZE
+    mov     qword [rel tt_header+24], TT_DEV_SIZE
+    mov     rax, [rel tt_rf_size]
+    mov     [rel tt_header+32], rax
+    mov     rax, [rel tt_rk_size]
+    mov     [rel tt_header+40], rax
+    movzx   eax, byte [rel test_mode]
+    mov     [rel tt_header+48], rax
+    mov     qword [rel tt_header+56], 1024
+    mov     rax, 0x0001000000000001
+    mov     [rel tt_header+72], rax
+    mov     qword [rel tt_header+80], TT_CON_MAX
+    mov     qword [rel tt_header+88], 32
+    call    tt_hash_initial
+    mov     [rel tt_header+64], rax
+    mov     [rel tt_chain], rax
+    ret
+
+tt_hash_initial:
+    mov     rax, TT_FNV
+    lea     rsi, [rel tt_header]
+    mov     ecx, 64
+    call    tt_hash_bytes
+    lea     rsi, [rel tt_header+72]
+    mov     ecx, 56
+    call    tt_hash_bytes
+    lea     rsi, [rel tt_slots]           ; initial canonical state, slot zero
+    mov     ecx, TT_STATE_SIZE
+    call    tt_hash_bytes
+    lea     rsi, [rel tt_rf_base]
+    mov     rcx, [rel tt_rf_size]
+    call    tt_hash_bytes
+    lea     rsi, [rel tt_rk_base]
+    mov     rcx, [rel tt_rk_size]
+    jmp     tt_hash_bytes
+
+tt_export_log:
+    push    r12
+    mov     r12, rdi
+    call    tt_hash_current
+    mov     [rel tt_footer+32], rax
+    mov     rax, 0x3130444E45545442       ; BTTEND01
+    mov     [rel tt_footer], rax
+    mov     rax, [rel tt_count]
+    mov     [rel tt_footer+8], rax
+    mov     rax, [rel tt_seq]
+    mov     [rel tt_footer+16], rax
+    mov     rax, [rel tt_insn]
+    mov     [rel tt_footer+24], rax
+    mov     rax, [rel tt_chain]
+    mov     [rel tt_footer+40], rax
+    mov     [rel tt_footer+48], r12
+    mov     eax, [rel tt_stage]
+    mov     [rel tt_footer+56], rax
+    mov     rax, [rel tt_console_len]
+    mov     [rel tt_footer+64], rax
+    mov     rax, TT_FNV
+    lea     rsi, [rel tt_footer]
+    mov     ecx, 72
+    call    tt_hash_bytes
+    mov     [rel tt_footer+72], rax
+    mov     edi, [rel tt_file_fd]
+    lea     rsi, [rel tt_header]
+    mov     edx, 128
+    call    tt_write_full
+    mov     edi, [rel tt_file_fd]
+    lea     rsi, [rel tt_slots]
+    mov     edx, TT_STATE_SIZE
+    call    tt_write_full
+    mov     edi, [rel tt_file_fd]
+    lea     rsi, [rel tt_rf_base]
+    mov     rdx, [rel tt_rf_size]
+    call    tt_write_full
+    mov     edi, [rel tt_file_fd]
+    lea     rsi, [rel tt_rk_base]
+    mov     rdx, [rel tt_rk_size]
+    call    tt_write_full
+    mov     edi, [rel tt_file_fd]
+    lea     rsi, [rel tt_frames]
+    mov     rdx, [rel tt_count]
+    shl     rdx, 5
+    call    tt_write_full
+    mov     edi, [rel tt_file_fd]
+    lea     rsi, [rel tt_footer]
+    mov     edx, 80
+    call    tt_write_full
+    mov     edi, [rel tt_file_fd]
+    mov     eax, 74                       ; fsync before reporting completion
+    syscall
+    test    rax, rax
+    jz      .synced
+    jmp     tt_error
+.synced:
+    mov     edi, [rel tt_file_fd]
+    mov     eax, 3
+    syscall
+    mov     byte [rel tt_file_open], 0
+    lea     rsi, [rel tt_recorded]
+    call    tt_puts
+    pop     r12
+    ret
+
+tt_verify_end:
+    mov     rax, [rel tt_seq]
+    cmp     rax, [rel tt_footer+16]
+    je      .sequence
+    jmp     tt_error
+.sequence:
+    mov     rax, [rel tt_insn]
+    cmp     rax, [rel tt_footer+24]
+    je      .instructions
+    jmp     tt_error
+.instructions:
+    mov     rax, [rel tt_cursor]
+    cmp     rax, [rel tt_count]
+    je      .events
+    jmp     tt_error
+.events:
+    mov     rax, [rel tt_console_len]
+    cmp     rax, [rel tt_footer+64]
+    je      .console
+    jmp     tt_error
+.console:
+    call    tt_hash_current
+    cmp     rax, [rel tt_footer+32]
+    je      .hash
+    jmp     tt_error
+.hash:
+    mov     byte [rel tt_verified], 1
+    lea     rsi, [rel tt_verified_text]
+    call    tt_puts
+    ret
+
+tt_stop_verified:
+    call    tt_verify_end
+    mov     rdi, [rel tt_footer+48]
+    jmp     exit_clean
+
+tt_load_log:
+    push    r12
+    push    r13
+    push    rbx
+    push    rbp
+    mov     eax, 2
+    mov     rdi, [rel tt_replay_path]
+    mov     esi, 0x800                    ; never block opening a malformed FIFO input
+    xor     edx, edx
+    syscall
+    test    rax, rax
+    jns     .opened
+    jmp     tt_error
+.opened:
+    mov     r12d, eax
+    mov     edi, r12d
+    mov     eax, 5
+    lea     rsi, [rel statbuf]
+    syscall
+    test    rax, rax
+    jz      .stat
+    jmp     tt_error
+.stat:
+    mov     eax, [rel statbuf+24]
+    and     eax, 0xF000
+    cmp     eax, 0x8000
+    je      .regular
+    jmp     tt_error
+.regular:
+    mov     rax, [rel statbuf+48]
+    cmp     rax, 41943040
+    jbe     .file_bounded
+    jmp     tt_error
+.file_bounded:
+    mov     [rel tt_file_size], rax
+    mov     edi, r12d
+    lea     rsi, [rel tt_header]
+    mov     edx, 128
+    call    tt_read_full
+    mov     rax, 0x3130474F4C545442
+    cmp     rax, [rel tt_header]
+    je      .magic
+    jmp     tt_error
+.magic:
+    cmp     qword [rel tt_header+8], 1
+    je      .version
+    jmp     tt_error
+.version:
+    cmp     qword [rel tt_header+16], TT_STATE_SIZE
+    je      .state_size
+    jmp     tt_error
+.state_size:
+    cmp     qword [rel tt_header+24], TT_DEV_SIZE
+    je      .dev_size
+    jmp     tt_error
+.dev_size:
+    cmp     qword [rel tt_header+48], 1
+    jbe     .test_flag
+    jmp     tt_error
+.test_flag:
+    cmp     qword [rel tt_header+56], 1024
+    je      .poll
+    jmp     tt_error
+.poll:
+    mov     rax, 0x0001000000000001
+    cmp     rax, [rel tt_header+72]
+    je      .schema
+    jmp     tt_error
+.schema:
+    cmp     qword [rel tt_header+80], TT_CON_MAX
+    je      .console_cap
+    jmp     tt_error
+.console_cap:
+    cmp     qword [rel tt_header+88], 32
+    je      .frame_size
+    jmp     tt_error
+.frame_size:
+    lea     rsi, [rel tt_header+96]
+    mov     ecx, 32
+.reserved:
+    cmp     byte [rsi], 0
+    je      .zero
+    jmp     tt_error
+.zero:
+    inc     rsi
+    dec     ecx
+    jnz     .reserved
+    mov     rax, [rel tt_header+32]
+    cmp     rax, TT_RF_MAX
+    jbe     .rf_cap
+    jmp     tt_error
+.rf_cap:
+    test    rax, 1
+    jz      .rf_aligned
+    jmp     tt_error
+.rf_aligned:
+    mov     [rel tt_rf_size], rax
+    mov     rax, [rel tt_header+40]
+    cmp     rax, TT_RK_MAX
+    jbe     .rk_cap
+    jmp     tt_error
+.rk_cap:
+    test    rax, 511
+    jz      .rk_aligned
+    jmp     tt_error
+.rk_aligned:
+    mov     [rel tt_rk_size], rax
+    test    rax, rax
+    jnz     .have_disks
+    cmp     qword [rel tt_rf_size], 0
+    je      .no_disks
+    jmp     tt_error
+.no_disks:
+    cmp     qword [rel tt_header+48], 1
+    je      .dimensions
+    jmp     tt_error
+.have_disks:
+    cmp     qword [rel tt_rf_size], 0
+    jne     .dimensions
+    jmp     tt_error
+.dimensions:
+    mov     rax, [rel tt_file_size]
+    mov     rdx, [rel tt_rf_size]
+    add     rdx, [rel tt_rk_size]
+    add     rdx, TT_STATE_SIZE+208
+    cmp     rax, rdx
+    jae     .envelope
+    jmp     tt_error
+.envelope:
+    sub     rax, rdx
+    test    rax, 31
+    jz      .frames_aligned
+    jmp     tt_error
+.frames_aligned:
+    shr     rax, 5
+    cmp     rax, TT_EVENTS_MAX
+    jbe     .frames_cap
+    jmp     tt_error
+.frames_cap:
+    mov     [rel tt_count], rax
+    mov     edi, r12d
+    lea     rsi, [rel tt_slots]
+    mov     edx, TT_STATE_SIZE
+    call    tt_read_full
+    mov     edi, r12d
+    lea     rsi, [rel tt_rf_base]
+    mov     rdx, [rel tt_rf_size]
+    call    tt_read_full
+    mov     edi, r12d
+    lea     rsi, [rel tt_rk_base]
+    mov     rdx, [rel tt_rk_size]
+    call    tt_read_full
+    mov     edi, r12d
+    lea     rsi, [rel tt_frames]
+    mov     rdx, [rel tt_count]
+    shl     rdx, 5
+    call    tt_read_full
+    mov     edi, r12d
+    lea     rsi, [rel tt_footer]
+    mov     edx, 80
+    call    tt_read_full
+    mov     edi, r12d
+    lea     rsi, [rel tt_key]
+    mov     edx, 1
+    xor     eax, eax
+    syscall
+    test    rax, rax
+    jz      .eof
+    jmp     tt_error
+.eof:
+    mov     edi, r12d
+    mov     eax, 3
+    syscall
+    call    tt_hash_initial
+    cmp     rax, [rel tt_header+64]
+    je      .initial_hash
+    jmp     tt_error
+.initial_hash:
+    mov     [rel tt_chain], rax
+    call    tt_validate_initial
+    call    tt_validate_footer
+    mov     rax, [rel tt_header+64]
+    lea     r12, [rel tt_frames]
+    xor     ebp, ebp
+    xor     ebx, ebx
+    mov     r13, [rel tt_count]
+.frame_loop:
+    test    r13, r13
+    jz      .frames_done
+    push    rax
+    mov     rdx, [r12]
+    test    ebp, ebp
+    jz      .first
+    cmp     rdx, rbx
+    ja      .first
+    jmp     tt_error
+.first:
+    mov     rbx, rdx
+    cmp     rdx, [rel tt_footer+16]
+    jbe     .before_end
+    jmp     tt_error
+.before_end:
+    movzx   ecx, byte [r12+8]
+    and     ecx, 0x3F
+    jz      .clock
+    jmp     tt_error
+.clock:
+    cmp     byte [r12+9], 1
+    jbe     .irq
+    jmp     tt_error
+.irq:
+    cmp     byte [r12+10], 2
+    jbe     .input_count
+    jmp     tt_error
+.input_count:
+    cmp     byte [r12+11], 127
+    jbe     .byte1
+    jmp     tt_error
+.byte1:
+    cmp     byte [r12+12], 127
+    jbe     .byte2
+    jmp     tt_error
+.byte2:
+    cmp     byte [r12+10], 2
+    je      .used_bytes
+    cmp     byte [r12+12], 0
+    je      .unused_second
+    jmp     tt_error
+.unused_second:
+    cmp     byte [r12+10], 0
+    jne     .used_bytes
+    cmp     byte [r12+11], 0
+    je      .used_bytes
+    jmp     tt_error
+.used_bytes:
+    lea     rsi, [r12+13]
+    mov     ecx, 11
+.frame_reserved:
+    cmp     byte [rsi], 0
+    je      .frame_zero
+    jmp     tt_error
+.frame_zero:
+    inc     rsi
+    dec     ecx
+    jnz     .frame_reserved
+    pop     rax
+    mov     rsi, r12
+    mov     ecx, 24
+    call    tt_hash_bytes
+    cmp     rax, [r12+24]
+    je      .frame_hash
+    jmp     tt_error
+.frame_hash:
+    add     r12, 32
+    inc     ebp
+    dec     r13
+    jmp     .frame_loop
+.frames_done:
+    cmp     rax, [rel tt_footer+40]
+    je      .chain
+    jmp     tt_error
+.chain:
+    mov     [rel tt_chain], rax
+    cmp     qword [rel tt_footer+56], 1
+    jne     .other_end
+    cmp     qword [rel tt_count], 0
+    jne     .poll_end
+    jmp     tt_error
+.poll_end:
+    cmp     rbx, [rel tt_footer+16]
+    je      .copy
+    jmp     tt_error
+.other_end:
+    cmp     qword [rel tt_count], 0
+    je      .copy
+    cmp     rbx, [rel tt_footer+16]
+    jb      .copy
+    jmp     tt_error
+.copy:
+    lea     rsi, [rel tt_slots]
+    lea     rdi, [rel tt_state]
+    mov     ecx, TT_STATE_SIZE
+    call    tt_copy
+    call    tt_unpack
+    lea     rsi, [rel tt_rf_base]
+    lea     rdi, [rel tt_rf_work]
+    mov     rcx, [rel tt_rf_size]
+    call    tt_copy
+    lea     rsi, [rel tt_rk_base]
+    lea     rdi, [rel tt_rk_work]
+    mov     rcx, [rel tt_rk_size]
+    call    tt_copy
+    mov     rax, [rel tt_rf_size]
+    shr     rax, 1
+    mov     [rel rf_nwords], eax
+    mov     rax, [rel tt_rk_size]
+    shr     rax, 9
+    mov     [rel rk_nblocks], eax
+    mov     rax, [rel tt_header+48]
+    mov     [rel test_mode], al
+    pop     rbp
+    pop     rbx
+    pop     r13
+    pop     r12
+    ret
+
+tt_validate_initial:
+    lea     rsi, [rel tt_slots+65552]
+    mov     ecx, 4
+.flag:
+    cmp     byte [rsi], 1
+    jbe     .flag_ok
+    jmp     tt_error
+.flag_ok:
+    inc     rsi
+    dec     ecx
+    jnz     .flag
+    cmp     byte [rsi], 7
+    jbe     .priority
+    jmp     tt_error
+.priority:
+    lea     rsi, [rel tt_slots+TT_CPU_SIZE]
+    mov     ecx, 21
+.irq:
+    cmp     byte [rsi], 1
+    jbe     .irq_ok
+    jmp     tt_error
+.irq_ok:
+    inc     rsi
+    dec     ecx
+    jnz     .irq
+    cmp     byte [rel tt_slots+TT_CPU_SIZE+tkb_n-irq_clk], 64
+    jbe     .fifo_count
+    jmp     tt_error
+.fifo_count:
+    cmp     byte [rel tt_slots+TT_CPU_SIZE+tkb_rd-irq_clk], 63
+    jbe     .fifo_read
+    jmp     tt_error
+.fifo_read:
+    cmp     byte [rel tt_slots+TT_CPU_SIZE+tkb_wr-irq_clk], 63
+    jbe     .fifo_write
+    jmp     tt_error
+.fifo_write:
+    cmp     byte [rel tt_slots+TT_EXTRA], 1
+    jbe     .wait
+    jmp     tt_error
+.wait:
+    cmp     dword [rel tt_slots+TT_EXTRA+1], 1024
+    je      .countdown
+    jmp     tt_error
+.countdown:
+    lea     rsi, [rel tt_slots+TT_EXTRA+5]
+    mov     ecx, 32
+.initial_zero:
+    cmp     byte [rsi], 0
+    je      .zero
+    jmp     tt_error
+.zero:
+    inc     rsi
+    dec     ecx
+    jnz     .initial_zero
+    ret
+
+tt_validate_footer:
+    mov     rax, 0x3130444E45545442
+    cmp     rax, [rel tt_footer]
+    je      .magic
+    jmp     tt_error
+.magic:
+    mov     rax, [rel tt_count]
+    cmp     rax, [rel tt_footer+8]
+    je      .count
+    jmp     tt_error
+.count:
+    cmp     qword [rel tt_footer+16], 1000000000
+    jbe     .position
+    jmp     tt_error
+.position:
+    mov     rax, [rel tt_footer+24]
+    cmp     rax, [rel tt_footer+16]
+    jbe     .instructions
+    jmp     tt_error
+.instructions:
+    cmp     qword [rel tt_footer+48], 2
+    jbe     .status
+    jmp     tt_error
+.status:
+    cmp     qword [rel tt_footer+56], 2
+    jbe     .kind
+    jmp     tt_error
+.kind:
+    cmp     qword [rel tt_footer+64], TT_CON_MAX
+    jbe     .console
+    jmp     tt_error
+.console:
+    mov     rax, TT_FNV
+    lea     rsi, [rel tt_footer]
+    mov     ecx, 72
+    call    tt_hash_bytes
+    cmp     rax, [rel tt_footer+72]
+    je      .done
+    jmp     tt_error
+.done:
+    ret
+
+; Monitor output is not guest console output and is never part of a journal.
+tt_puts:
+    mov     rdx, rsi
+.scan:
+    cmp     byte [rdx], 0
+    je      .write
+    inc     rdx
+    jmp     .scan
+.write:
+    sub     rdx, rsi
+    mov     edi, 2
+    mov     eax, 1
+    syscall
+    ret
+tt_put_hex:
+    lea     rdi, [rel tt_hex]
+    mov     r8, rax
+    mov     ecx, 16
+.digit:
+    mov     rdx, r8
+    shr     rdx, 60
+    shl     r8, 4
+    cmp     dl, 10
+    jb      .number
+    add     dl, 55
+    jmp     .store
+.number:
+    add     dl, 48
+.store:
+    mov     [rdi], dl
+    inc     rdi
+    dec     ecx
+    jnz     .digit
+    lea     rsi, [rel tt_hex]
+    mov     edx, 16
+    mov     edi, 2
+    mov     eax, 1
+    syscall
+    ret
+tt_position:
+    lea     rsi, [rel tt_pos_b]
+    call    tt_puts
+    mov     rax, [rel tt_seq]
+    call    tt_put_hex
+    lea     rsi, [rel tt_pos_i]
+    call    tt_puts
+    mov     rax, [rel tt_insn]
+    call    tt_put_hex
+    lea     rsi, [rel tt_pos_e]
+    call    tt_puts
+    mov     rax, [rel tt_cursor]
+    call    tt_put_hex
+    lea     rsi, [rel tt_slash]
+    call    tt_puts
+    mov     rax, [rel tt_count]
+    call    tt_put_hex
+    lea     rsi, [rel tt_nl]
+    jmp     tt_puts
+
+; Decimal and 0x hexadecimal arguments, bounded to unsigned 63-bit values.
+tt_parse_number:
+    mov     rsi, [rel tt_arg]
+.space:
+    cmp     byte [rsi], 32
+    jne     .begin
+    inc     rsi
+    jmp     .space
+.begin:
+    xor     eax, eax
+    xor     r8d, r8d
+    mov     r9d, 10
+    cmp     byte [rsi], '0'
+    jne     .loop
+    cmp     byte [rsi+1], 'x'
+    jne     .loop
+    add     rsi, 2
+    mov     r9d, 16
+.loop:
+    movzx   ecx, byte [rsi]
+    test    ecx, ecx
+    jz      .end
+    cmp     cl, 32
+    je      .trailing
+    cmp     cl, '0'
+    jb      .bad
+    cmp     cl, '9'
+    jbe     .decimal
+    cmp     cl, 'A'
+    jb      .lower
+    cmp     cl, 'F'
+    ja      .lower
+    sub     ecx, 55
+    jmp     .digit
+.lower:
+    cmp     cl, 'a'
+    jb      .bad
+    cmp     cl, 'f'
+    ja      .bad
+    sub     ecx, 87
+    jmp     .digit
+.decimal:
+    sub     ecx, 48
+.digit:
+    cmp     ecx, r9d
+    jae     .bad
+    mov     rdx, 0x07FFFFFFFFFFFFFF
+    cmp     rax, rdx
+    ja      .bad
+    imul    rax, r9
+    add     rax, rcx
+    test    rax, rax
+    js      .bad
+    inc     r8d
+    inc     rsi
+    jmp     .loop
+.trailing:
+    inc     rsi
+    cmp     byte [rsi], 32
+    je      .trailing
+    cmp     byte [rsi], 0
+    jne     .bad
+.end:
+    test    r8d, r8d
+    jz      .bad
+    mov     [rel tt_number], rax
+    mov     edx, 1
+    ret
+.bad:
+    xor     edx, edx
+    ret
+
+tt_command_is:
+    lea     rsi, [rel tt_cmd]
+    jmp     streq
+
+tt_arguments_valid:
+    lea     rdi, [rel tt_cmd_step]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .yes
+    lea     rdi, [rel tt_cmd_back]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .yes
+    lea     rdi, [rel tt_cmd_cycle]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .yes
+    lea     rdi, [rel tt_cmd_seek]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .yes
+    lea     rdi, [rel tt_cmd_restore]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .yes
+    mov     rsi, [rel tt_arg]
+    cmp     byte [rsi], 0
+    je      .yes
+    xor     eax, eax
+    ret
+.yes:
+    mov     eax, 1
+    ret
+
+tt_monitor:
+    push    r12
+    push    r13
+    mov     byte [rel escape_prefix], 0
+.next:
+    lea     rsi, [rel tt_prompt]
+    call    tt_puts
+    xor     r12d, r12d
+    mov     byte [rel tt_cmd_overflow], 0
+    mov     byte [rel tt_mon_prefix], 0
+.read:
+    xor     eax, eax
+    xor     edi, edi
+    lea     rsi, [rel tt_key]
+    mov     edx, 1
+    syscall
+    test    rax, rax
+    jnz     .not_eof
+    jmp     .quit
+.not_eof:
+    cmp     rax, 1
+    je      .key
+    call    tt_sleep
+    jmp     .read
+.key:
+    mov     al, [rel tt_key]
+    cmp     al, 5
+    jne     .not_exit
+    jmp     .quit
+.not_exit:
+    mov     cl, [rel tt_mon_prefix]
+    mov     byte [rel tt_mon_prefix], 0
+    cmp     cl, 1
+    jne     .prefix_x
+    cmp     al, 'x'
+    je      .quit_key
+    cmp     al, 'X'
+    je      .quit_key
+.prefix_x:
+    cmp     cl, 24
+    jne     .new_prefix
+    cmp     al, 'a'
+    je      .quit_key
+    cmp     al, 'A'
+    jne     .new_prefix
+.quit_key:
+    jmp     .quit
+.new_prefix:
+    cmp     al, 1
+    je      .prefix
+    cmp     al, 24
+    jne     .normal_key
+.prefix:
+    mov     [rel tt_mon_prefix], al
+    jmp     .read
+.normal_key:
+    cmp     al, 13
+    je      .line
+    cmp     al, 10
+    je      .line
+    cmp     al, 8
+    je      .backspace
+    cmp     al, 127
+    je      .backspace
+    cmp     al, 32
+    jb      .read
+    cmp     al, 126
+    ja      .read
+    cmp     r12d, 95
+    jb      .append
+    mov     byte [rel tt_cmd_overflow], 1
+    jmp     .read
+.append:
+    lea     rdx, [rel tt_cmd]
+    mov     [rdx+r12], al
+    inc     r12d
+    mov     eax, 1
+    mov     edi, 2
+    lea     rsi, [rel tt_key]
+    mov     edx, 1
+    syscall
+    jmp     .read
+.backspace:
+    test    r12d, r12d
+    jz      .read
+    dec     r12d
+    lea     rsi, [rel tt_erase]
+    call    tt_puts
+    jmp     .read
+.line:
+    lea     rsi, [rel tt_nl]
+    call    tt_puts
+    lea     rdi, [rel tt_cmd]
+    mov     byte [rdi+r12], 0
+    cmp     byte [rel tt_cmd_overflow], 0
+    je      .split
+    jmp     .bad
+.split:
+    mov     rsi, rdi
+.split_loop:
+    cmp     byte [rsi], 0
+    je      .arg
+    cmp     byte [rsi], 32
+    je      .split_here
+    inc     rsi
+    jmp     .split_loop
+.split_here:
+    mov     byte [rsi], 0
+    inc     rsi
+.arg:
+    cmp     byte [rsi], 32
+    jne     .arg_ready
+    inc     rsi
+    jmp     .arg
+.arg_ready:
+    mov     [rel tt_arg], rsi
+    cmp     byte [rel tt_cmd], 0
+    jne     .validate_args
+    jmp     .next
+.validate_args:
+    call    tt_arguments_valid
+    test    eax, eax
+    jnz     .dispatch
+    jmp     .bad
+.dispatch:
+    lea     rdi, [rel tt_cmd_help]
+    call    tt_command_is
+    test    eax, eax
+    jz      .hash_test
+    lea     rsi, [rel tt_help]
+    call    tt_puts
+    jmp     .next
+.hash_test:
+    lea     rdi, [rel tt_cmd_hash]
+    call    tt_command_is
+    test    eax, eax
+    jz      .regs_test
+    call    tt_hash_current
+    push    rax
+    lea     rsi, [rel tt_hash_label]
+    call    tt_puts
+    pop     rax
+    call    tt_put_hex
+    lea     rsi, [rel tt_nl]
+    call    tt_puts
+    jmp     .next
+.regs_test:
+    lea     rdi, [rel tt_cmd_regs]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .show_regs
+    jmp     .snap_test
+.show_regs:
+    call    tt_position
+    xor     r13d, r13d
+.reg:
+    mov     eax, r13d
+    add     al, '0'
+    mov     [rel tt_reg_label+1], al
+    lea     rsi, [rel tt_reg_label]
+    call    tt_puts
+    movzx   eax, word [r15+r13*2]
+    call    tt_put_hex
+    lea     rsi, [rel tt_nl]
+    call    tt_puts
+    inc     r13d
+    cmp     r13d, 8
+    jb      .reg
+    lea     rsi, [rel tt_psw_label]
+    call    tt_puts
+    call    psw_get
+    call    tt_put_hex
+    lea     rsi, [rel tt_nl]
+    call    tt_puts
+    jmp     .next
+.snap_test:
+    lea     rdi, [rel tt_cmd_snap]
+    call    tt_command_is
+    test    eax, eax
+    jz      .restore_test
+    call    tt_save_ring
+.snap_id:
+    lea     rsi, [rel tt_snap_label]
+    call    tt_puts
+    mov     rax, [rel tt_saved_id]
+    call    tt_put_hex
+    lea     rsi, [rel tt_nl]
+    call    tt_puts
+    jmp     .next
+.restore_test:
+    lea     rdi, [rel tt_cmd_restore]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .restore
+    jmp     .step_test
+.restore:
+    call    tt_parse_number
+    test    edx, edx
+    jnz     .find_snapshot
+    jmp     .bad
+.find_snapshot:
+    xor     r13d, r13d
+.find:
+    mov     edi, r13d
+    call    tt_meta_address
+    cmp     qword [rax+8], 1
+    jne     .find_next
+    mov     rcx, [rel tt_number]
+    cmp     rcx, [rax]
+    je      .found
+.find_next:
+    inc     r13d
+    cmp     r13d, 8
+    jb      .find
+    jmp     .bad
+.found:
+    mov     edi, r13d
+    call    tt_restore_slot
+    cmp     byte [rel tt_replay], 0
+    jne     .restore_muted
+    mov     byte [rel tt_historical], 1
+.restore_muted:
+    mov     byte [rel tt_mute], 1
+    jmp     .next
+.step_test:
+    lea     rdi, [rel tt_cmd_devices]
+    call    tt_command_is
+    test    eax, eax
+    jz      .disks_test
+    call    tt_show_devices
+    jmp     .next
+.disks_test:
+    lea     rdi, [rel tt_cmd_disks]
+    call    tt_command_is
+    test    eax, eax
+    jz      .console_test
+    lea     rsi, [rel tt_rf_label]
+    call    tt_puts
+    mov     rax, TT_FNV
+    lea     rsi, [rel tt_rf_work]
+    mov     rcx, [rel tt_rf_size]
+    call    tt_hash_bytes
+    call    tt_put_hex
+    lea     rsi, [rel tt_rk_label]
+    call    tt_puts
+    mov     rax, TT_FNV
+    lea     rsi, [rel tt_rk_work]
+    mov     rcx, [rel tt_rk_size]
+    call    tt_hash_bytes
+    call    tt_put_hex
+    lea     rsi, [rel tt_nl]
+    call    tt_puts
+    jmp     .next
+.console_test:
+    lea     rdi, [rel tt_cmd_console]
+    call    tt_command_is
+    test    eax, eax
+    jz      .snaps_test
+    call    tt_show_console
+    jmp     .next
+.snaps_test:
+    lea     rdi, [rel tt_cmd_snaps]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .show_snaps
+    jmp     .step_command
+.show_snaps:
+    xor     r13d, r13d
+.snaps_loop:
+    mov     edi, r13d
+    call    tt_meta_address
+    mov     r12, rax
+    cmp     qword [r12+8], 1
+    jne     .snaps_next
+    lea     rsi, [rel tt_snap_label]
+    call    tt_puts
+    mov     rax, [r12]
+    call    tt_put_hex
+    lea     rsi, [rel tt_pos_b]
+    call    tt_puts
+    mov     rax, [r12+16]
+    call    tt_put_hex
+    lea     rsi, [rel tt_pos_i]
+    call    tt_puts
+    mov     rax, [r12+24]
+    call    tt_put_hex
+    lea     rsi, [rel tt_nl]
+    call    tt_puts
+.snaps_next:
+    inc     r13d
+    cmp     r13d, 8
+    jb      .snaps_loop
+    jmp     .next
+.step_command:
+    mov     r13d, 2
+    lea     rdi, [rel tt_cmd_step]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .step
+    mov     r13d, 1
+    lea     rdi, [rel tt_cmd_cycle]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .step
+    jmp     .seek_test
+.step:
+    call    tt_parse_number
+    test    edx, edx
+    jnz     .step_number
+    mov     rsi, [rel tt_arg]
+    cmp     byte [rsi], 0
+    je      .one
+    jmp     .bad
+.one:
+    mov     qword [rel tt_number], 1
+.step_number:
+    mov     rax, [rel tt_number]
+    test    rax, rax
+    jnz     .step_nonzero
+    jmp     .bad
+.step_nonzero:
+    cmp     rax, 1000000
+    jbe     .step_bounded
+    jmp     .bad
+.step_bounded:
+    cmp     r13d, 1
+    jne     .step_insn
+    add     rax, [rel tt_seq]
+    jmp     .step_goal
+.step_insn:
+    add     rax, [rel tt_insn]
+.step_goal:
+    cmp     byte [rel tt_replay], 0
+    je      .set_step_goal
+    cmp     r13d, 1
+    jne     .replay_insn_bound
+    cmp     rax, [rel tt_footer+16]
+    jbe     .set_step_goal
+    jmp     .bad
+.replay_insn_bound:
+    cmp     rax, [rel tt_footer+24]
+    jbe     .set_step_goal
+    jmp     .bad
+.set_step_goal:
+    mov     [rel tt_goal], rax
+    mov     [rel tt_goal_kind], r13d
+    mov     byte [rel tt_pause], 0
+    jmp     .resume
+.seek_test:
+    lea     rdi, [rel tt_cmd_seek]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .seek
+    jmp     .back_test
+.seek:
+    call    tt_parse_number
+    test    edx, edx
+    jnz     .seek_number
+    jmp     .bad
+.seek_number:
+    mov     rax, [rel tt_number]
+    cmp     byte [rel tt_replay], 0
+    jne     .seek_file
+    cmp     rax, [rel tt_front_seq]
+    jbe     .seek_start
+    jmp     .bad
+.seek_file:
+    cmp     rax, [rel tt_footer+16]
+    jbe     .seek_start
+    jmp     .bad
+.seek_start:
+    mov     edi, 1
+    call    tt_begin_seek
+    jmp     .resume
+.back_test:
+    lea     rdi, [rel tt_cmd_back]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .back
+    jmp     .continue_test
+.back:
+    call    tt_parse_number
+    test    edx, edx
+    jnz     .back_number
+    mov     rsi, [rel tt_arg]
+    cmp     byte [rsi], 0
+    je      .back_one
+    jmp     .bad
+.back_one:
+    mov     qword [rel tt_number], 1
+.back_number:
+    mov     rcx, [rel tt_number]
+    test    rcx, rcx
+    jnz     .back_nonzero
+    jmp     .bad
+.back_nonzero:
+    mov     rax, [rel tt_insn]
+    cmp     rax, rcx
+    jae     .back_start
+    jmp     .bad
+.back_start:
+    sub     rax, rcx
+    mov     edi, 2
+    call    tt_begin_seek
+    jmp     .resume
+.continue_test:
+    lea     rdi, [rel tt_cmd_continue]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .continue
+    lea     rdi, [rel tt_cmd_c]
+    call    tt_command_is
+    test    eax, eax
+    jz      .quit_test
+.continue:
+    mov     dword [rel tt_goal_kind], 0
+    mov     byte [rel tt_pause], 0
+    cmp     byte [rel tt_replay], 0
+    je      .continue_record
+    mov     byte [rel tt_mute], 0
+.continue_record:
+    jmp     .resume
+.quit_test:
+    lea     rdi, [rel tt_cmd_quit]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .quit
+    lea     rdi, [rel tt_cmd_q]
+    call    tt_command_is
+    test    eax, eax
+    jnz     .quit
+    jmp     .bad
+.bad:
+    lea     rsi, [rel tt_bad_command]
+    call    tt_puts
+    jmp     .next
+.quit:
+    mov     byte [rel tt_user_stop], 1
+    xor     edi, edi
+    jmp     exit_clean
+.resume:
+    mov     qword [rel last_tick], 0
+    mov     byte [rel escape_prefix], 0
+    pop     r13
+    pop     r12
+    ret
+
+tt_show_console:
+    push    r12
+    mov     r12, [rel tt_console_len]
+    mov     rcx, r12
+    cmp     rcx, 4096
+    jbe     .bounded
+    mov     ecx, 4096
+.bounded:
+    sub     r12, rcx
+    lea     rsi, [rel tt_console]
+    add     rsi, r12
+    lea     rdi, [rel tt_console_view]
+    mov     r12, rcx
+    test    ecx, ecx
+    jz      .write
+.byte:
+    mov     al, [rsi]
+    cmp     al, 10
+    je      .store
+    cmp     al, 13
+    je      .store
+    cmp     al, 9
+    je      .store
+    cmp     al, 32
+    jb      .replace
+    cmp     al, 126
+    jbe     .store
+.replace:
+    mov     al, '.'
+.store:
+    mov     [rdi], al
+    inc     rsi
+    inc     rdi
+    dec     ecx
+    jnz     .byte
+.write:
+    lea     rsi, [rel tt_console_label]
+    call    tt_puts
+    mov     eax, 1
+    mov     edi, 2
+    lea     rsi, [rel tt_console_view]
+    mov     rdx, r12
+    syscall
+    lea     rsi, [rel tt_nl]
+    call    tt_puts
+    pop     r12
+    ret
+
+tt_field:
+    push    rax
+    call    tt_puts
+    pop     rax
+    jmp     tt_put_hex
+
+tt_show_devices:
+    lea     rsi, [rel tt_d_wait]
+    movzx   eax, byte [rel waitflag]
+    call    tt_field
+    lea     rsi, [rel tt_d_fifo]
+    movzx   eax, byte [rel tkb_n]
+    call    tt_field
+    lea     rsi, [rel tt_d_clock]
+    movzx   eax, byte [rel lks]
+    call    tt_field
+    lea     rsi, [rel tt_d_irqc]
+    movzx   eax, byte [rel irq_clk]
+    call    tt_field
+    lea     rsi, [rel tt_d_irqrf]
+    movzx   eax, byte [rel irq_rf]
+    call    tt_field
+    lea     rsi, [rel tt_d_irqrk]
+    movzx   eax, byte [rel irq_rk]
+    call    tt_field
+    lea     rsi, [rel tt_d_irqrx]
+    movzx   eax, byte [rel irq_tti]
+    call    tt_field
+    lea     rsi, [rel tt_d_irqtx]
+    movzx   eax, byte [rel irq_tto]
+    call    tt_field
+    lea     rsi, [rel tt_nl]
+    call    tt_puts
+    lea     rsi, [rel tt_d_rfcs]
+    movzx   eax, word [rel rf_dcs]
+    call    tt_field
+    lea     rsi, [rel tt_d_rkcs]
+    movzx   eax, word [rel rkcs]
+    call    tt_field
+    lea     rsi, [rel tt_d_ac]
+    movzx   eax, word [rel ke_regs+2]
+    call    tt_field
+    lea     rsi, [rel tt_d_mq]
+    movzx   eax, word [rel ke_regs+4]
+    call    tt_field
+    lea     rsi, [rel tt_nl]
+    jmp     tt_puts
+
+tt_error:
+    mov     byte [rel tt_failed], 1
+    lea     rsi, [rel tt_error_text]
+    call    tt_puts
+    call    tt_position
+    mov     edi, 1
+    jmp     exit_clean
+
+section .data
+tt_reg_label: db "R0=", 0
+section .rodata
+tt_opt_time: db "time-travel", 0
+tt_opt_record: db "record", 0
+tt_opt_replay: db "replay", 0
+tt_opt_help: db "help", 0
+tt_intro: db "Bemu time travel: private disks; Ctrl-A then M opens the host monitor.", 10, 0
+tt_volatile_text: db "Volatile timeline: no session file is created.", 10, 0
+tt_sensitive_text: db "Recording is opt-in and sensitive; a clean exit finalizes the owner-only session file.", 10, 0
+tt_replay_text: db "Replay: live guest input is blocked; host monitor/exit controls remain available.", 10, 0
+tt_exists_text: db "Recording path already exists; choose a new file (nothing was overwritten).", 10, 0
+tt_prompt: db "(bemu-tt)> ", 0
+tt_nl: db 10, 0
+tt_erase: db 8, 32, 8, 0
+tt_help: db "help regs devices hash disks console snap snaps restore ID", 10
+         db "step [N] back [N] cycle [N] seek BOUNDARY continue quit", 10
+         db "Numbers: decimal or 0x hexadecimal. Ctrl-A M pauses at the next boundary.", 10
+         db "Caps: RF 1 MiB, RK 4 MiB, 1048576 events/console bytes, 8 public checkpoints.", 10, 0
+tt_bad_command: db "Invalid command, number, or unavailable snapshot.", 10, 0
+tt_error_text: db "bemu-tt: invalid state, I/O, format, divergence, or capacity limit.", 10, 0
+tt_recorded: db "Recording completed (private images; sensitive session file).", 10, 0
+tt_verified_text: db "Replay verified: canonical state, disks, console, and journal position match.", 10, 0
+tt_interrupted: db "Replay interrupted by host control; final verification not claimed.", 10, 0
+tt_hash_label: db "hash=", 0
+tt_snap_label: db "snapshot=", 0
+tt_pos_b: db "boundary=", 0
+tt_pos_i: db " instructions=", 0
+tt_pos_e: db " events=", 0
+tt_slash: db "/", 0
+tt_psw_label: db "PSW=", 0
+tt_rf_label: db "RF=", 0
+tt_rk_label: db " RK=", 0
+tt_console_label: db "[sanitized logical console, last 4096 bytes]", 10, 0
+tt_cmd_help: db "help", 0
+tt_cmd_hash: db "hash", 0
+tt_cmd_regs: db "regs", 0
+tt_cmd_snap: db "snap", 0
+tt_cmd_restore: db "restore", 0
+tt_cmd_step: db "step", 0
+tt_cmd_cycle: db "cycle", 0
+tt_cmd_seek: db "seek", 0
+tt_cmd_back: db "back", 0
+tt_cmd_disks: db "disks", 0
+tt_cmd_devices: db "devices", 0
+tt_cmd_console: db "console", 0
+tt_cmd_snaps: db "snaps", 0
+tt_cmd_continue: db "continue", 0
+tt_cmd_c: db "c", 0
+tt_cmd_quit: db "quit", 0
+tt_cmd_q: db "q", 0
+tt_d_wait: db "WAIT=", 0
+tt_d_fifo: db " FIFO=", 0
+tt_d_clock: db " CLK=", 0
+tt_d_irqc: db " IRQ-C=", 0
+tt_d_irqrf: db " IRQ-RF=", 0
+tt_d_irqrk: db " IRQ-RK=", 0
+tt_d_irqrx: db " IRQ-RX=", 0
+tt_d_irqtx: db " IRQ-TX=", 0
+tt_d_rfcs: db "RF-CS=", 0
+tt_d_rkcs: db " RK-CS=", 0
+tt_d_ac: db " AC=", 0
+tt_d_mq: db " MQ=", 0

@@ -1,0 +1,183 @@
+#!/usr/bin/expect -f
+# Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+# License: original unix-v1 terms; see ../../LICENSE.
+
+set timeout 30
+set root [file normalize [file join [file dirname [info script]] ../..]]
+set backend [lindex $argv 0]
+set tmp ""
+set child ""
+
+proc await {pattern description} {
+    global spawn_id
+    expect {
+        -re $pattern { return $expect_out(buffer) }
+        timeout { error "timeout waiting for $description" }
+        eof { error "early exit waiting for $description" }
+    }
+}
+proc prompt {colored} {
+    if {$colored} {
+        return [await {\x1b\[97m\x1b\[1m#\x1b\[0m } "Midnight-colored original prompt"]
+    }
+    return [await {(^|[\r\n])# } "plain original prompt"]
+}
+proc command {line pattern {colored 1} {slow 0}} {
+    global spawn_id
+    if {$slow} {
+        send -s -- "$line\r"
+    } else {
+        send -- "$line\r"
+    }
+    set output [prompt $colored]
+    if {$pattern ne "" && ![regexp -- $pattern $output]} {
+        error "unexpected output for '$line': $output"
+    }
+    if {$pattern eq "" && [regexp {Unsupported shell syntax|Unsupported terminal escape|Multiline paste is not supported|Input line too long|Invalid argument count|Cannot change directory|Cannot execute command|Cannot read command|Cannot create process|Cannot wait for process} $output]} {
+        error "command unexpectedly failed: $output"
+    }
+    set plain_output $output
+    if {[string first "\033" $line] >= 0} {
+        # Input markers echoed by the historical kernel are not shell SGR.
+        set plain_output [string map [list "\033\[200~" {} "\033\[201~" {}] $plain_output]
+    }
+    if {!$colored && [string first "\033" $plain_output] >= 0} {
+        error "plain mode emitted ANSI for '$line'"
+    }
+    return $output
+}
+proc run {} {
+    global root backend tmp child spawn_id timeout env send_slow
+    set base /tmp
+    if {[info exists env(TMPDIR)]} { set base $env(TMPDIR) }
+    set tmp [exec mktemp -d [file join $base jash11-test.XXXXXX]]
+    set images $root/jash11/build
+    if {[info exists env(JASH11_OUTPUT_DIR)]} { set images [file normalize $env(JASH11_OUTPUT_DIR)] }
+    foreach disk {rf0 rk0} { file copy $images/$disk.dsk $tmp/$disk.dsk }
+    if {$backend eq "bemu"} {
+        spawn -noecho $root/bemu-pdp11/bemu-pdp11 $tmp/rf0.dsk $tmp/rk0.dsk
+    } elseif {$backend eq "simh"} {
+        set f [open $root/simh.cfg]
+        set cfg [read $f]
+        close $f
+        set cfg [string map [list images/rf0.dsk $tmp/rf0.dsk images/rk0.dsk $tmp/rk0.dsk images/tape $tmp/tape images/m792low.load $root/boot/m792low.load] $cfg]
+        # These tests use the console only, without a host TCP listener.
+        regsub -line {^att dci .*$} $cfg {} cfg
+        regsub -line {^set rha disabled$} $cfg {} cfg
+        set f [open $tmp/simh.cfg w]
+        puts $f $cfg
+        close $f
+        spawn -noecho $root/tools/pdp11 $tmp/simh.cfg
+    } else { error "backend must be bemu or simh" }
+    set child [exp_pid]
+    await {login:} login
+    send -- "root\r"
+    await {(^|[\r\n])# } "original shell"
+    send -- "/bin/jash\r"
+    await {Jash/11: native PDP-11 shell, Unix V1 edition\.} "native banner"
+    prompt 1
+    command "help" {Pipes, jobs, expansion and globbing are not supported\.}
+    command "version" {(^|[\r\n])Jash/11 1\.0 \(native Unix V1 edition\)[\r\n]}
+    command "version extra" {Invalid argument count}
+    command "color" {} 1
+    # A parent terminal can leave bracketed-paste mode enabled. Its markers
+    # are echoed as invisible CSI sequences, so the screen only shows 'color'.
+    command "\033\[200~color\033\[201~" {} 1
+    command "\033\[200~version\033\[201~" {(^|[\r\n])Jash/11 1\.0 }
+    command "\033\[200~\033\[201~" {} 1
+    command "echo \033\[200~literal\033\[201~-tail" {(^|[\r\n])literal-tail[ \r\n]}
+    command "\033\[200~echo bad; echo unsafe\033\[201~" {Unsupported shell syntax\.}
+    command "\033\[Acolor" {Unsupported terminal escape or control input}
+    command "color" {} 1
+    command "\033\[2" {Unsupported terminal escape or control input}
+    command "\033\[201~color" {Unsupported terminal escape or control input}
+    command "\000color" {Unsupported terminal escape or control input}
+    set send_slow {1 0.002}
+    # Use a native builtin plus whitespace: the historical /bin/echo itself
+    # truncates/corrupts sufficiently long arguments even under original sh.
+    # First split a closing marker across a V1 canon chunk, then hit the
+    # maximum normalized line length without counting the paste wrappers.
+    command "\033\[200~color[string repeat { } 105]\033\[201~" {} 1 1
+    command "\033\[200~color[string repeat { } 114]\033\[201~" {} 1 1
+    command "\033\[200~color[string repeat { } 115]\033\[201~" {Input line too long; command discarded\.} 1 1
+    send -s -- "\033\[200~echo paste-first\necho paste-second\033\[201~\r"
+    set rejected [prompt 1]
+    if {![regexp {Multiline paste is not supported; entire paste discarded\.} $rejected] ||
+        [regexp {(^|[\r\n])paste-(first|second)[ \r\n]} $rejected]} {
+        error "multiline paste was not discarded as a whole: $rejected"
+    }
+    command "echo after-paste" {(^|[\r\n])after-paste[ \r\n]}
+    send -s -- "\033\[200~echo [string repeat x 121]\necho never-run\033\[201~\r"
+    set rejected [prompt 1]
+    if {![regexp {Multiline paste is not supported; entire paste discarded\.} $rejected] ||
+        [regexp {(^|[\r\n])never-run[ \r\n]} $rejected]} {
+        error "oversized multiline paste was not discarded: $rejected"
+    }
+    command "ls -l" {[ \t]bin[\r\n]}
+    command "echo native-argument-ok" {(^|[\r\n])native-argument-ok[ \r\n]}
+    command "echo 1 2 3 4 5 6 7" {(^|[\r\n])1 2 3 4 5 6 7[ \r\n]}
+    command "echo 1 2 3 4 5 6 7 8" {Invalid argument count}
+    command "cd /usr" {}
+    command "ls" {(^|[\r\n])src[\r\n]}
+    command "chdir /" {}
+    command "missing" {Cannot execute command\.}
+    command "cd /absent" {Cannot change directory\.}
+    command "echo bad; echo unsafe" {Unsupported shell syntax\.}
+    command "exit extra" {Invalid argument count}
+    set send_slow {1 0.002}
+    send -s -- "echo [string repeat x 121]\r"
+    set output [prompt 1]
+    if {![regexp {Input line too long; command discarded\.} $output]} {
+        error "long input was not rejected: $output"
+    }
+    command "echo after-overflow" {(^|[\r\n])after-overflow[ \r\n]}
+    command "plain" {} 0
+    command "help" {Jash/11 1\.0:} 0
+    command "\033\[200~version\033\[201~" {(^|[\r\n])Jash/11 1\.0 } 0
+    command "color" {} 1
+    send -- "exit\r"
+    set output [prompt 0]
+    if {[string first "\033" $output] >= 0} { error "color leaked into /bin/sh" }
+
+    send -- "/bin/jash -p\r"
+    set output [prompt 0]
+    if {![regexp {Jash/11: native PDP-11 shell, Unix V1 edition\.} $output] ||
+        [string first "\033" $output] >= 0} { error "-p did not launch without ANSI" }
+    command "echo plain-ok" {(^|[\r\n])plain-ok[ \r\n]} 0
+    send -- "\004"
+    # V1 may echo EOT without adding a newline before the parent sh prompt.
+    await {(^|[\r\n\x04])# } "historical shell after EOF"
+    send -- "/bin/jash -p\r"
+    await {Jash/11: native PDP-11 shell, Unix V1 edition\.} "plain shell for incomplete-paste EOF"
+    prompt 0
+    send -- "\033\[200~color\r\004"
+    await {(^|[\r\n\x04])# } "historical shell after incomplete paste and EOF"
+    # The historical shell still executes commands after the guest shell exits.
+    command "ls" {(^|[\r\n])bin[\r\n]} 0
+    send -- "\005"
+    if {$backend eq "simh"} {
+        await {sim>} "SIMH monitor"
+        send -- "q\r"
+    }
+    expect {
+        eof {}
+        timeout { error "emulator did not exit cleanly" }
+    }
+    set status [wait]
+    set child ""
+    if {[lindex $status 2] != 0 || [lindex $status 3] != 0} { error "exit status: $status" }
+}
+set failed [catch {run} message]
+if {$child ne ""} {
+    # SIMH handles TERM by stopping simulation rather than exiting its monitor.
+    catch {exec kill -KILL $child}
+    catch {close}
+    catch {wait}
+}
+if {$tmp ne ""} { file delete -force $tmp }
+if {$failed} {
+    puts stderr "\n\[TEST\] FAIL ($backend): $message"
+    exit 1
+}
+puts "\n\[TEST\] PASS ($backend): native Jash/11"
+exit 0

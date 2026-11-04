@@ -1,0 +1,66 @@
+/ Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+/ License: original unix-v1 terms; see ../../LICENSE.
+/
+/ KE11-A MMIO regression: MQ sign extension and V1 RK block arithmetic.
+/ V1 as, PC-relative, R0=52 oct on success.
+halt = 0
+    mov $1000,sp
+    mov $177300,r4
+/ Writing positive MQ must clear AC, not copy MQ into it.
+    mov $4,4(r4)
+    tst 2(r4)
+    bne fail
+    mov $12.,(r4)
+    tst 4(r4)
+    bne fail
+    cmp $4,2(r4)
+    bne fail
+/ The kernel's RK address calculation for block 1000.
+    mov $1000.,4(r4)
+    mov $12.,(r4)
+    cmp $83.,4(r4)
+    bne fail
+    cmp $4,2(r4)
+    bne fail
+    mov 2(r4),r2
+    mov $4,14(r4)
+    bis 4(r4),r2
+    cmp $1332.,r2
+    bne fail
+/ Negative MQ sets AC to -1, independent of the low word.
+    mov $-42.,4(r4)
+    cmp $-1,2(r4)
+    bne fail
+    mov $6,(r4)
+    cmp $-7,4(r4)
+    bne fail
+    tst 2(r4)
+    bne fail
+/ A following zero write must clear a previous negative AC.
+    mov $-1,4(r4)
+    clr 4(r4)
+    tst 2(r4)
+    bne fail
+    tst 4(r4)
+    bne fail
+/ Byte MQ writes follow the same sign-word rule (including high byte).
+    movb $252,4(r4)
+    cmp $177652,4(r4)
+    bne fail
+    cmp $-1,2(r4)
+    bne fail
+    movb $0,5(r4)
+    cmp $252,4(r4)
+    bne fail
+    tst 2(r4)
+    bne fail
+    movb $200,5(r4)
+    cmp $100252,4(r4)
+    bne fail
+    cmp $-1,2(r4)
+    bne fail
+    mov $52,r0
+    halt
+fail:
+    clr r0
+    halt

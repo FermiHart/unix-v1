@@ -1,0 +1,15 @@
+; Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+; License: original unix-v1 terms; see ../../LICENSE.
+; PSW serialization must not depend on the host ECX high bytes left by EA.
+BITS 32
+section .text
+    dw 0x15C6, 0x0200              ; MOV #1000,SP
+    dw 0x0A1F, 0xFFFE              ; CLR @#PSW
+    dw 0x15C0, 0x1234              ; MOV #positive,R0 (NZVC=0)
+    dw 0x1DC1, 0xFFEE              ; MOV PSW(PC-relative),R1; extension has high bits
+    dw 0x25C1, 0                   ; CMP #0,R1
+    dw 0x0203                     ; BNE fail
+    dw 0x15C0, 42
+    dw 0
+    dw 0x0A00
+    dw 0

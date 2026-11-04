@@ -1,0 +1,115 @@
+/ Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+/ License: original unix-v1 terms; see ../../LICENSE.
+/
+/ cpu4 self-test for bemu-pdp11: clist get/put instruction shapes
+/ (indexed MOVB, BIC #mask, ASL/ASR, INCB/DECB/BISB/BICB indexed).
+/ R0=52 oct on success, 0 on fail. Assembled with V1 as.
+/ EAE not encodable here: covered by cpu3.
+halt = 0
+    mov $1000,sp
+/ 1: indexed byte load, dst == index reg (get: movb cf+1(r2),r2)
+/ (PC-relative tab address: V1 as links text at 0x4000, harness runs at 0)
+    mov pc,r2
+    add $tab-.,r2
+    movb 1(r2),r2
+    cmp $142,r2
+    bne fail
+/ 2: bic !377 strip high byte (get/put: bic $!377,r2)
+    mov $12345,r2
+    bic $!377,r2
+    cmp $345,r2
+    bne fail
+/ 3: asl offset scaling (get/put: asl r2)
+    mov $3,r2
+    asl r2
+    cmp $6,r2
+    bne fail
+    asl r2
+    cmp $14,r2
+    bne fail
+/ 4: asl with carry out (V11: C=old b15, V=N^C)
+    mov $100000,r2
+    asl r2
+    bcc fail
+    bvs 1f
+    jmp fail
+1:  tst r2
+    bne fail
+    mov $100001,r2
+    asl r2
+    bcc fail
+    bvs 1f
+    jmp fail
+1:  cmp $2,r2
+    bne fail
+/ 5: asr sign extension
+    mov $100001,r2
+    asr r2
+    cmp $140000,r2
+    bne fail
+    mov $10,r2
+    asr r2
+    cmp $4,r2
+    bne fail
+    br 1f
+fail:
+    clr r0
+    halt
+1:
+/ 6: indexed-indexed movb (put: movb clist-1(r2),cf+1(r1))
+    mov pc,r1
+    add $tab-.,r1
+    mov $130,r0
+    movb r0,4(r1)
+    cmpb $130,4(r1)
+    bne fail
+    movb 4(r1),r0
+    cmp $130,r0
+    bne fail
+/ 7: incb/decb indexed (putc/getc: incb cc(r1))
+    mov pc,r1
+    add $tab-.,r1
+    clrb 6(r1)
+    incb 6(r1)
+    cmpb $1,6(r1)
+    bne fail
+    decb 6(r1)
+    tstb 6(r1)
+    bne fail
+/ 8: bisb/bicb/bitb indexed (imap shapes)
+    mov pc,r1
+    add $tab-.,r1
+    movb $7,7(r1)
+    bicb $1,7(r1)
+    cmpb $6,7(r1)
+    bne fail
+    bisb $10,7(r1)
+    cmpb $16,7(r1)
+    bne fail
+    bitb $4,7(r1)
+    beq fail
+    bitb $1,7(r1)
+    bne fail
+/ 9: byte ops modes 1/2 (putlu/getc shapes: (r2), (r2)+)
+    mov pc,r1
+    add $tab-.,r1
+    movb (r1),r2
+    cmp $141,r2
+    bne fail
+    mov $130,r0
+    movb r0,(r1)
+    cmpb $130,(r1)
+    bne fail
+    mov pc,r1
+    add $tab-.,r1
+    movb (r1)+,r2
+    cmp $130,r2
+    bne fail
+    tstb (r1)+
+    beq fail
+    movb (r1),r2
+    cmp $143,r2
+    bne fail
+    mov $52,r0
+    halt
+tab:   .byte 141,142,143,144,145,0,0,0

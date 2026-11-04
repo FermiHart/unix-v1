@@ -1,0 +1,1461 @@
+; Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+; License: original unix-v1 terms; see ../../LICENSE.
+;
+; Jash/11: a bounded, independently implemented native PDP-11 shell profile.
+; No source is copied from the modern Jash implementation. ANSI SGR values
+; follow its default Midnight palette: banner 96, prompt 97 + bold.
+; Bear Basm emits explicit PDP-11 words, not x86 instructions. BITS 32
+; selects the assembler container only. The 0407 loader places text at
+; 040000 octal; LOAD converts a file-offset label into a guest address.
+; Branches use fixed local skips; non-local control flow uses absolute JMP.
+BITS 32
+section .text
+LOAD equ 0x3FF0
+    dw 0x0107, image_end-text, 0, 0, 0, 0, 0, 0
+text:
+    dw 0x8905, LOAD+console_name, 1  ; establish diagnostics before parsing CLI options
+    dw 0x8702
+    dw 0x101F, LOAD+error_fd
+    dw 0x1383                       ; MOV (SP),R3: argc
+    dw 0x1185                       ; MOV SP,R5
+    dw 0x65C5, 4                    ; argv[1]
+    dw 0x0AC3
+cli_next:
+    dw 0x0BC3
+    dw 0x0202
+    dw 0x005F, LOAD+identify
+    dw 0x1544                       ; MOV (R5)+,R4: next argument (byte-safe strings)
+    dw 0x0AC3
+    dw 0x1101
+    dw 0x15C2, LOAD+option_plain
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+cli_plain
+    dw 0x1101
+    dw 0x15C2, LOAD+option_command
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+cli_command
+    dw 0xA5CC, 45                   ; unknown option is not a script filename
+    dw 0x0202
+    dw 0x005F, LOAD+usage_error
+    dw 0x0BC3
+    dw 0x0302
+    dw 0x005F, LOAD+usage_error
+    dw 0x111F, LOAD+startup_file
+    dw 0x005F, LOAD+identify
+cli_plain:
+    dw 0x0A1F, LOAD+colored          ; CLR colored
+    dw 0x005F, LOAD+cli_next
+cli_command:
+    dw 0x25C3, 1
+    dw 0x0302
+    dw 0x005F, LOAD+usage_error
+    dw 0x1341                       ; MOV (R5),R1: command string
+    dw 0x105F, LOAD+pending_command
+    dw 0x15DF, 1, LOAD+command_mode
+    dw 0x005F, LOAD+identify
+identify:
+    dw 0x8918                       ; SYS getuid
+    dw 0x0BC0                       ; TST R0
+    dw 0x0306                       ; BEQ banner_select
+    dw 0x95DF, 36, LOAD+plain_prompt ; MOVB #'$',@#plain_prompt
+    dw 0x95DF, 36, LOAD+prompt_mark
+banner_select:
+    dw 0x17C1, LOAD+startup_file
+    dw 0x0BC1
+    dw 0x0302
+    dw 0x005F, LOAD+startup_script
+    dw 0x0BDF, LOAD+command_mode
+    dw 0x0302
+    dw 0x005F, LOAD+prompt
+    dw 0x0BDF, LOAD+colored          ; TST colored
+    dw 0x0202
+    dw 0x005F, LOAD+plain_banner
+    dw 0x15C1, LOAD+banner_color
+    dw 0x15C2, banner_color_end-banner_color
+    dw 0x09DF, LOAD+write_string     ; JSR PC,@#write_string
+    dw 0x005F, LOAD+prompt
+plain_banner:
+    dw 0x15C1, LOAD+banner
+    dw 0x15C2, banner_end-banner
+    dw 0x09DF, LOAD+write_string
+prompt:
+    dw 0x0BDF, LOAD+read_fd
+    dw 0x0302
+    dw 0x005F, LOAD+read_line
+    dw 0x0BDF, LOAD+command_mode
+    dw 0x0302
+    dw 0x005F, LOAD+command_string
+    dw 0x0BDF, LOAD+colored
+    dw 0x0202
+    dw 0x005F, LOAD+prompt_plain
+    dw 0x15C1, LOAD+color_prompt
+    dw 0x15C2, color_prompt_end-color_prompt
+    dw 0x09DF, LOAD+write_string
+    dw 0x005F, LOAD+read_line
+prompt_plain:
+    dw 0x15C1, LOAD+plain_prompt
+    dw 0x15C2, 2
+    dw 0x09DF, LOAD+write_string
+read_line:
+    dw 0x15C5, LOAD+line_buffer      ; R5 = bounded output cursor
+    dw 0x0A04                       ; R4 = normalized line length
+    dw 0x0A1F, LOAD+line_error
+    dw 0x0A1F, LOAD+paste_active
+    dw 0x0A1F, LOAD+escape_state
+read_byte:
+    dw 0x17C0, LOAD+read_fd          ; command files do not replace child stdin
+    dw 0x8903, LOAD+input_byte, 1    ; V1 canon chunks are not command boundaries
+    dw 0x8602                       ; BCC: read succeeded
+    dw 0x005F, LOAD+read_error
+    dw 0x0BC0
+    dw 0x0202
+    dw 0x005F, LOAD+input_eof
+    dw 0x97C0, LOAD+input_byte       ; MOVB @#input_byte,R0
+    dw 0x0BDF, LOAD+escape_state
+    dw 0x0202
+    dw 0x005F, LOAD+input_character
+    dw 0x005F, LOAD+escape_byte
+input_character:
+    dw 0xA5C0, 27                   ; ESC begins a terminal marker, not syntax
+    dw 0x0202
+    dw 0x005F, LOAD+start_escape
+    dw 0xA5C0, 10
+    dw 0x0202
+    dw 0x005F, LOAD+end_input_line
+    dw 0xA5C0, 9                    ; TAB remains an argument separator
+    dw 0x0202
+    dw 0x005F, LOAD+store_character
+    dw 0xB5C0, 0x60                 ; reject other nonprinting input, including NUL
+    dw 0x0202
+    dw 0x005F, LOAD+invalid_character
+    dw 0xA5C0, 127
+    dw 0x0202
+    dw 0x005F, LOAD+invalid_character
+store_character:
+    dw 0x0BDF, LOAD+line_error
+    dw 0x0302
+    dw 0x005F, LOAD+read_byte         ; keep draining an invalid line/paste
+    dw 0x25C4, 119
+    dw 0x0202
+    dw 0x005F, LOAD+overflow_input
+    dw 0x9015                       ; MOVB R0,(R5)+
+    dw 0x0A84                       ; INC R4
+    dw 0x005F, LOAD+read_byte
+overflow_input:
+    dw 0x15DF, 1, LOAD+line_error
+    dw 0x005F, LOAD+read_byte
+invalid_character:
+    dw 0x15DF, 2, LOAD+line_error
+    dw 0x005F, LOAD+read_byte
+start_escape:
+    dw 0x15DF, 1, LOAD+escape_state
+    dw 0x005F, LOAD+read_byte
+; Recognize only the standard six-byte bracketed-paste markers. State is
+; retained across V1's 120-byte canonical chunks. Unknown CSI input is an
+; explicit input error, never silently converted into an executable command.
+escape_byte:
+    dw 0x17C3, LOAD+escape_state
+    dw 0x25C3, 1
+    dw 0x0202
+    dw 0x005F, LOAD+escape_bracket
+    dw 0x25C3, 2
+    dw 0x0202
+    dw 0x005F, LOAD+escape_two
+    dw 0x25C3, 3
+    dw 0x0202
+    dw 0x005F, LOAD+escape_zero
+    dw 0x25C3, 4
+    dw 0x0202
+    dw 0x005F, LOAD+escape_kind_byte
+    dw 0xA5C0, 126                  ; final '~'
+    dw 0x0302
+    dw 0x005F, LOAD+bad_escape
+    dw 0x0A1F, LOAD+escape_state
+    dw 0x0BDF, LOAD+escape_kind
+    dw 0x0302
+    dw 0x005F, LOAD+close_paste
+    dw 0x0BDF, LOAD+paste_active
+    dw 0x0302
+    dw 0x005F, LOAD+invalid_character ; nested markers are not supported
+    dw 0x15DF, 1, LOAD+paste_active
+    dw 0x005F, LOAD+read_byte
+close_paste:
+    dw 0x0BDF, LOAD+paste_active
+    dw 0x0202
+    dw 0x005F, LOAD+invalid_character ; unmatched close marker
+    dw 0x0A1F, LOAD+paste_active
+    dw 0x005F, LOAD+read_byte
+escape_bracket:
+    dw 0xA5C0, 91
+    dw 0x0302
+    dw 0x005F, LOAD+bad_escape
+    dw 0x005F, LOAD+next_escape_byte
+escape_two:
+    dw 0xA5C0, 50
+    dw 0x0302
+    dw 0x005F, LOAD+bad_escape
+    dw 0x005F, LOAD+next_escape_byte
+escape_zero:
+    dw 0xA5C0, 48
+    dw 0x0302
+    dw 0x005F, LOAD+bad_escape
+    dw 0x005F, LOAD+next_escape_byte
+escape_kind_byte:
+    dw 0xA5C0, 48
+    dw 0x0202
+    dw 0x005F, LOAD+paste_begin_kind
+    dw 0xA5C0, 49
+    dw 0x0302
+    dw 0x005F, LOAD+bad_escape
+    dw 0x15DF, 1, LOAD+escape_kind
+    dw 0x005F, LOAD+next_escape_byte
+paste_begin_kind:
+    dw 0x0A1F, LOAD+escape_kind
+next_escape_byte:
+    dw 0x0A9F, LOAD+escape_state
+    dw 0x005F, LOAD+read_byte
+bad_escape:
+    dw 0x15DF, 2, LOAD+line_error
+    dw 0x0A1F, LOAD+escape_state
+    dw 0x005F, LOAD+input_character   ; LF must still terminate malformed input
+end_input_line:
+    dw 0x0BDF, LOAD+paste_active
+    dw 0x0302
+    dw 0x005F, LOAD+multiline_input
+    dw 0x0BDF, LOAD+line_error
+    dw 0x0302
+    dw 0x005F, LOAD+report_input_error
+    dw 0x005F, LOAD+terminate_line
+multiline_input:
+    dw 0x15DF, 3, LOAD+line_error     ; reject the entire paste, not just its first line
+    dw 0x005F, LOAD+read_byte
+input_eof:
+    dw 0x0BDF, LOAD+line_error
+    dw 0x0302
+    dw 0x005F, LOAD+finish_source
+    dw 0x0BDF, LOAD+paste_active
+    dw 0x0302
+    dw 0x005F, LOAD+finish_source
+    dw 0x0BDF, LOAD+escape_state
+    dw 0x0302
+    dw 0x005F, LOAD+finish_source
+    dw 0x0BC4
+    dw 0x0202
+    dw 0x005F, LOAD+finish_source
+terminate_line:
+    dw 0x8A0D                       ; CLRB (R5)
+    dw 0x09DF, LOAD+prepare_history
+    dw 0x15C1, LOAD+line_buffer
+    dw 0x15C5, LOAD+line_buffer      ; compact tokens in place, behind the reader
+    dw 0x15C2, LOAD+arguments
+    dw 0x0A03                       ; CLR R3: argc
+    dw 0x0A04                       ; R4 = quote delimiter, or zero
+    dw 0x0A1F, LOAD+word_open
+    dw 0x0A1F, LOAD+redirect_pending
+    dw 0x0A1F, LOAD+input_path
+    dw 0x0A1F, LOAD+output_path
+    dw 0x0A1F, LOAD+append_mode
+    dw 0x0A1F, LOAD+in_child
+lex_byte:
+    dw 0x9440                       ; MOVB (R1)+,R0
+    dw 0x8BC0                       ; TSTB R0
+    dw 0x0202
+    dw 0x005F, LOAD+lex_end
+    dw 0x0BC4
+    dw 0x0302
+    dw 0x005F, LOAD+quoted_byte
+    dw 0xA5C0, 32
+    dw 0x0202
+    dw 0x005F, LOAD+end_word
+    dw 0xA5C0, 9
+    dw 0x0202
+    dw 0x005F, LOAD+end_word
+    dw 0xA5C0, 35                   ; comments start only at an unquoted word boundary
+    dw 0x0202
+    dw 0x005F, LOAD+comment_start
+    dw 0xA5C0, 34
+    dw 0x0202
+    dw 0x005F, LOAD+open_quote
+    dw 0xA5C0, 39
+    dw 0x0202
+    dw 0x005F, LOAD+open_quote
+    dw 0xA5C0, 92
+    dw 0x0202
+    dw 0x005F, LOAD+escaped_byte
+    dw 0xA5C0, 60
+    dw 0x0202
+    dw 0x005F, LOAD+redirect_operator
+    dw 0xA5C0, 62
+    dw 0x0202
+    dw 0x005F, LOAD+redirect_operator
+    dw 0x1026                       ; preserve quote state while scanning specials
+    dw 0x1126
+    dw 0x15C4, LOAD+unsupported
+scan_special:
+    dw 0x8BCC                       ; TSTB (R4)
+    dw 0x0202
+    dw 0x005F, LOAD+ordinary_byte
+    dw 0xA500                       ; CMPB (R4)+,R0
+    dw 0x0202
+    dw 0x005F, LOAD+lex_special_error
+    dw 0x005F, LOAD+scan_special
+comment_start:
+    dw 0x0BDF, LOAD+word_open
+    dw 0x0202
+    dw 0x005F, LOAD+lex_end
+    dw 0x005F, LOAD+store_word_byte
+ordinary_byte:
+    dw 0x1584                       ; MOV (SP)+,R4
+    dw 0x1580                       ; MOV (SP)+,R0
+store_word_byte:
+    dw 0x09DF, LOAD+word_start
+    dw 0x9015                       ; MOVB R0,(R5)+
+    dw 0x005F, LOAD+lex_byte
+lex_special_error:
+    dw 0x1584
+    dw 0x1580
+    dw 0x005F, LOAD+syntax_error
+open_quote:
+    dw 0x09DF, LOAD+word_start
+    dw 0x1004                       ; MOV R0,R4: delimiter
+    dw 0x005F, LOAD+lex_byte
+quoted_byte:
+    dw 0xA100                       ; CMPB R4,R0
+    dw 0x0202
+    dw 0x005F, LOAD+close_quote
+    dw 0x25C4, 34
+    dw 0x0302
+    dw 0x005F, LOAD+store_word_byte  ; single quotes keep backslashes literal
+    dw 0xA5C0, 92
+    dw 0x0202
+    dw 0x005F, LOAD+escaped_byte
+    dw 0x005F, LOAD+store_word_byte
+close_quote:
+    dw 0x0A04
+    dw 0x005F, LOAD+lex_byte
+escaped_byte:
+    dw 0x9440
+    dw 0x8BC0
+    dw 0x0202
+    dw 0x005F, LOAD+quote_error
+    dw 0x005F, LOAD+store_word_byte
+end_word:
+    dw 0x0BDF, LOAD+word_open
+    dw 0x0202
+    dw 0x005F, LOAD+lex_byte
+    dw 0x8A15                       ; CLRB (R5)+
+    dw 0x0A1F, LOAD+word_open
+    dw 0x005F, LOAD+lex_byte
+lex_end:
+    dw 0x0BC4
+    dw 0x0302
+    dw 0x005F, LOAD+quote_error
+    dw 0x8A0D
+    dw 0x0BDF, LOAD+redirect_pending
+    dw 0x0302
+    dw 0x005F, LOAD+syntax_error
+    dw 0x17C0, LOAD+input_path
+    dw 0x0BC0
+    dw 0x0202
+    dw 0x005F, LOAD+check_output_name
+    dw 0x8BC8                       ; TSTB (R0): no empty filename
+    dw 0x0202
+    dw 0x005F, LOAD+syntax_error
+check_output_name:
+    dw 0x17C0, LOAD+output_path
+    dw 0x0BC0
+    dw 0x0202
+    dw 0x005F, LOAD+parsed
+    dw 0x8BC8
+    dw 0x0202
+    dw 0x005F, LOAD+syntax_error
+    dw 0x005F, LOAD+parsed
+redirect_operator:
+    dw 0x0BDF, LOAD+redirect_pending
+    dw 0x0302
+    dw 0x005F, LOAD+syntax_error
+    dw 0x0BDF, LOAD+word_open
+    dw 0x0303
+    dw 0x8A15
+    dw 0x0A1F, LOAD+word_open
+    dw 0xA5C0, 60
+    dw 0x0202
+    dw 0x005F, LOAD+redirect_in
+    dw 0x0BDF, LOAD+output_path
+    dw 0x0302
+    dw 0x005F, LOAD+syntax_error
+    dw 0x15DF, 2, LOAD+redirect_pending
+    dw 0xA5C9, 62                   ; CMPB #'>',(R1): optional append operator
+    dw 0x0302
+    dw 0x005F, LOAD+lex_byte
+    dw 0x0A81
+    dw 0x15DF, 1, LOAD+append_mode
+    dw 0x005F, LOAD+lex_byte
+redirect_in:
+    dw 0x0BDF, LOAD+input_path
+    dw 0x0302
+    dw 0x005F, LOAD+syntax_error
+    dw 0x15DF, 1, LOAD+redirect_pending
+    dw 0x005F, LOAD+lex_byte
+word_start:
+    dw 0x0BDF, LOAD+word_open
+    dw 0x0302
+    dw 0x005F, LOAD+word_started
+    dw 0x0BDF, LOAD+redirect_pending
+    dw 0x0302
+    dw 0x005F, LOAD+redirect_word
+    dw 0x25C3, 8
+    dw 0x0203
+    dw 0x0BD6                       ; discard this helper's return on parser abort
+    dw 0x005F, LOAD+argument_error
+    dw 0x1152                       ; MOV R5,(R2)+
+    dw 0x0A83
+    dw 0x005F, LOAD+mark_word_open
+redirect_word:
+    dw 0x25DF, 1, LOAD+redirect_pending
+    dw 0x0202
+    dw 0x005F, LOAD+input_word
+    dw 0x115F, LOAD+output_path      ; MOV R5,@#output_path
+    dw 0x005F, LOAD+redirect_word_done
+input_word:
+    dw 0x115F, LOAD+input_path
+redirect_word_done:
+    dw 0x0A1F, LOAD+redirect_pending
+mark_word_open:
+    dw 0x15DF, 1, LOAD+word_open
+word_started:
+    dw 0x0087
+parsed:
+    dw 0x0A0A                       ; CLR (R2): argv terminator
+    dw 0x10DF, LOAD+argument_count   ; MOV R3,@#argument_count
+    dw 0x0BC3
+    dw 0x0202
+    dw 0x005F, LOAD+empty_command
+    dw 0x09DF, LOAD+commit_history
+dispatch:
+    dw 0x17C1, LOAD+arguments        ; MOV @#arguments,R1
+    dw 0x15C2, LOAD+exit_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+exit_builtin
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+help_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+help_builtin
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+version_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+version_builtin
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+plain_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+plain_builtin
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+color_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+color_builtin
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+cd_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+cd_builtin
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+source_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+source_builtin
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+history_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+history_builtin
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+complete_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+complete_builtin
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+echo_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+echo_builtin
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+chdir_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+cd_builtin
+    dw 0x0BDF, LOAD+in_child
+    dw 0x0302
+    dw 0x005F, LOAD+exec_external
+fork_command:
+    dw 0x8902                       ; SYS fork: child executes next BR;
+    dw 0x0105                       ; parent skips it (V1 ABI, not POSIX)
+    dw 0x8602                       ; BCC: successful parent return
+    dw 0x005F, LOAD+fork_error
+    dw 0x005F, LOAD+wait_child
+    dw 0x005F, LOAD+run_child
+wait_child:
+    dw 0x1004                       ; MOV R0,R4: child pid
+wait_again:
+    dw 0x8907                       ; SYS wait
+    dw 0x8602
+    dw 0x005F, LOAD+wait_error
+    dw 0x2004                       ; CMP R0,R4
+    dw 0x0302
+    dw 0x005F, LOAD+wait_again
+    dw 0x005F, LOAD+prompt
+run_child:
+    dw 0x15DF, 1, LOAD+in_child
+    dw 0x17C0, LOAD+read_fd
+    dw 0x0BC0
+    dw 0x0301
+    dw 0x8906                       ; do not leak source/script descriptors into exec
+    dw 0x17C1, LOAD+input_path
+    dw 0x0BC1
+    dw 0x0202
+    dw 0x005F, LOAD+redirect_output
+    dw 0x105F, LOAD+open_input_arg
+    dw 0x0A00
+    dw 0x8906                       ; close stdin in the child only
+    dw 0x8905
+open_input_arg:
+    dw 0, 0
+    dw 0x8602
+    dw 0x005F, LOAD+input_redirect_error
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+input_redirect_error
+redirect_output:
+    dw 0x17C1, LOAD+output_path
+    dw 0x0BC1
+    dw 0x0202
+    dw 0x005F, LOAD+dispatch
+    dw 0x105F, LOAD+create_output_arg
+    dw 0x105F, LOAD+append_output_arg
+    dw 0x15C0, 1
+    dw 0x8906                       ; close stdout only after input succeeded
+    dw 0x0BDF, LOAD+append_mode
+    dw 0x0202
+    dw 0x005F, LOAD+create_output
+    dw 0x8905
+append_output_arg:
+    dw 0, 1
+    dw 0x8702
+    dw 0x005F, LOAD+output_opened
+create_output:
+    dw 0x8908
+create_output_arg:
+    dw 0, 0x000F
+    dw 0x8602
+    dw 0x005F, LOAD+output_redirect_error
+output_opened:
+    dw 0x25C0, 1
+    dw 0x0302
+    dw 0x005F, LOAD+output_redirect_error
+    dw 0x0BDF, LOAD+append_mode
+    dw 0x0202
+    dw 0x005F, LOAD+dispatch
+    dw 0x8913, 0, 2                 ; SYS seek: stdout offset 0 from end
+    dw 0x8602
+    dw 0x005F, LOAD+output_redirect_error
+    dw 0x005F, LOAD+dispatch
+exec_external:
+    dw 0x17C1, LOAD+arguments
+    dw 0x105F, LOAD+exec_path        ; MOV R1,@#exec_path
+    dw 0x890B                       ; SYS exec: try literal pathname first
+exec_path:
+    dw 0, LOAD+arguments
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+path_tail
+copy_path:
+    dw 0x9452                       ; MOVB (R1)+,(R2)+ (bounded by input)
+    dw 0x0302
+    dw 0x005F, LOAD+copy_path
+    dw 0x890B, LOAD+path_buffer, LOAD+arguments
+    dw 0x15C1, LOAD+exec_message
+    dw 0x15C2, exec_message_end-exec_message
+    dw 0x09DF, LOAD+write_error
+    dw 0x005F, LOAD+leave
+exit_builtin:
+    dw 0x09DF, LOAD+stateful_begin
+    dw 0x25DF, 1, LOAD+argument_count ; CMP #1,@#argument_count
+    dw 0x0302
+    dw 0x005F, LOAD+argument_error
+leave:
+    dw 0x8901                       ; SYS exit: original /bin/sh resumes
+help_builtin:
+    dw 0x25DF, 1, LOAD+argument_count
+    dw 0x0302
+    dw 0x005F, LOAD+argument_error
+    dw 0x09DF, LOAD+pure_begin
+    dw 0x15C1, LOAD+help_message
+    dw 0x15C2, help_message_end-help_message
+    dw 0x09DF, LOAD+write_string
+    dw 0x005F, LOAD+builtin_done
+version_builtin:
+    dw 0x25DF, 1, LOAD+argument_count
+    dw 0x0302
+    dw 0x005F, LOAD+argument_error
+    dw 0x09DF, LOAD+pure_begin
+    dw 0x15C1, LOAD+version_message
+    dw 0x15C2, version_message_end-version_message
+    dw 0x09DF, LOAD+write_string
+    dw 0x005F, LOAD+builtin_done
+plain_builtin:
+    dw 0x09DF, LOAD+stateful_begin
+    dw 0x25DF, 1, LOAD+argument_count
+    dw 0x0302
+    dw 0x005F, LOAD+argument_error
+    dw 0x0A1F, LOAD+colored
+    dw 0x005F, LOAD+prompt
+color_builtin:
+    dw 0x09DF, LOAD+stateful_begin
+    dw 0x25DF, 1, LOAD+argument_count
+    dw 0x0302
+    dw 0x005F, LOAD+argument_error
+    dw 0x15DF, 1, LOAD+colored       ; MOV #1,@#colored
+    dw 0x005F, LOAD+prompt
+cd_builtin:
+    dw 0x09DF, LOAD+stateful_begin
+    dw 0x25DF, 2, LOAD+argument_count
+    dw 0x0302
+    dw 0x005F, LOAD+argument_error
+    dw 0x17C1, LOAD+arguments+2
+    dw 0x105F, LOAD+directory_arg
+    dw 0x890C                       ; SYS chdir
+directory_arg:
+    dw 0
+    dw 0x8602
+    dw 0x005F, LOAD+directory_error
+    dw 0x005F, LOAD+prompt
+echo_builtin:
+    dw 0x09DF, LOAD+pure_begin
+    dw 0x15DF, 1, LOAD+echo_newline
+    dw 0x15C4, 1                    ; first user argument
+    dw 0x25DF, 1, LOAD+argument_count
+    dw 0x0202
+    dw 0x005F, LOAD+echo_finished
+    dw 0x17C1, LOAD+arguments+2
+    dw 0x15C2, LOAD+echo_no_newline
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0202
+    dw 0x005F, LOAD+echo_argument
+    dw 0x0A1F, LOAD+echo_newline
+    dw 0x0A84
+echo_argument:
+    dw 0x211F, LOAD+argument_count
+    dw 0x0202
+    dw 0x005F, LOAD+echo_finished
+    dw 0x1100
+    dw 0x0CC0
+    dw 0x1C01, LOAD+arguments
+    dw 0x1043
+echo_length:
+    dw 0x8BD3
+    dw 0x0302
+    dw 0x005F, LOAD+echo_length
+    dw 0x0AC3
+    dw 0x10C2
+    dw 0xE042
+    dw 0x09DF, LOAD+write_string
+    dw 0x0A84
+    dw 0x211F, LOAD+argument_count
+    dw 0x0202
+    dw 0x005F, LOAD+echo_finished
+    dw 0x15C1, LOAD+space_byte
+    dw 0x15C2, 1
+    dw 0x09DF, LOAD+write_string
+    dw 0x005F, LOAD+echo_argument
+echo_finished:
+    dw 0x0BDF, LOAD+echo_newline
+    dw 0x0202
+    dw 0x005F, LOAD+builtin_done
+    dw 0x15C1, LOAD+newline
+    dw 0x15C2, 1
+    dw 0x09DF, LOAD+write_string
+    dw 0x005F, LOAD+builtin_done
+source_builtin:
+    dw 0x09DF, LOAD+stateful_begin
+    dw 0x25DF, 2, LOAD+argument_count
+    dw 0x0302
+    dw 0x005F, LOAD+argument_error
+    dw 0x0BDF, LOAD+read_fd
+    dw 0x0302
+    dw 0x005F, LOAD+nested_source_error
+    dw 0x0A1F, LOAD+file_mode
+    dw 0x17C1, LOAD+arguments+2
+    dw 0x005F, LOAD+open_source
+history_builtin:
+    dw 0x25DF, 1, LOAD+argument_count
+    dw 0x0202
+    dw 0x005F, LOAD+show_history
+    dw 0x25DF, 2, LOAD+argument_count
+    dw 0x0302
+    dw 0x005F, LOAD+argument_error
+    dw 0x005F, LOAD+history_control
+complete_builtin:
+    dw 0x25DF, 2, LOAD+argument_count
+    dw 0x0302
+    dw 0x005F, LOAD+argument_error
+    dw 0x09DF, LOAD+pure_begin
+    dw 0x0A1F, LOAD+completion_matches
+    dw 0x0A1F, LOAD+completion_phase
+    dw 0x0A1F, LOAD+completion_dir_length
+    dw 0x17C1, LOAD+arguments+2
+    dw 0x105F, LOAD+completion_arg
+    dw 0x0A05                       ; R5 = final slash, or zero
+completion_slash:
+    dw 0x9440
+    dw 0x8BC0
+    dw 0x0202
+    dw 0x005F, LOAD+completion_split
+    dw 0xA5C0, 47
+    dw 0x0302
+    dw 0x005F, LOAD+completion_slash
+    dw 0x1045
+    dw 0x0AC5
+    dw 0x005F, LOAD+completion_slash
+completion_split:
+    dw 0x0BC5
+    dw 0x0202
+    dw 0x005F, LOAD+completion_bare
+    dw 0x1140
+    dw 0x0A80
+    dw 0x101F, LOAD+completion_prefix
+    dw 0xE7C0, LOAD+completion_arg
+    dw 0x101F, LOAD+completion_dir_length
+    dw 0x17C1, LOAD+completion_arg
+    dw 0x15C2, LOAD+completion_directory_buffer
+completion_copy_directory:
+    dw 0x2045                       ; CMP R1,R5
+    dw 0x0202
+    dw 0x005F, LOAD+completion_directory_ready
+    dw 0x9452
+    dw 0x005F, LOAD+completion_copy_directory
+completion_directory_ready:
+    dw 0x25C2, LOAD+completion_directory_buffer
+    dw 0x0202
+    dw 0x95D2, 47                   ; root slash: MOVB #'/',(R2)+
+    dw 0x8A0A
+    dw 0x15C1, LOAD+completion_directory_buffer
+    dw 0x005F, LOAD+completion_open
+completion_bare:
+    dw 0x17C0, LOAD+completion_arg
+    dw 0x101F, LOAD+completion_prefix
+    dw 0x15DF, 1, LOAD+completion_phase
+    dw 0x15C1, LOAD+dot_directory
+completion_open:
+    dw 0x105F, LOAD+completion_open_arg
+    dw 0x105F, LOAD+completion_stat_arg
+    dw 0x8912
+completion_stat_arg:
+    dw 0, LOAD+file_stat
+    dw 0x8602
+    dw 0x005F, LOAD+completion_open_error
+    dw 0x35DF, 0x4000, LOAD+file_stat+2
+    dw 0x0202
+    dw 0x005F, LOAD+completion_open_error
+    dw 0x8905
+completion_open_arg:
+    dw 0, 0
+    dw 0x8602
+    dw 0x005F, LOAD+completion_open_error
+    dw 0x101F, LOAD+completion_fd
+completion_read:
+    dw 0x17C0, LOAD+completion_fd
+    dw 0x8903, LOAD+completion_entry, 10
+    dw 0x8602
+    dw 0x005F, LOAD+completion_read_error
+    dw 0x0BC0
+    dw 0x0202
+    dw 0x005F, LOAD+completion_next_directory
+    dw 0x25C0, 10
+    dw 0x0302
+    dw 0x005F, LOAD+completion_read_error
+    dw 0x0BDF, LOAD+completion_entry
+    dw 0x0202
+    dw 0x005F, LOAD+completion_read
+    dw 0x17C1, LOAD+completion_prefix
+    dw 0x15C2, LOAD+completion_entry+2
+    dw 0xA5CA, 46                   ; hidden entries require a dot prefix
+    dw 0x0302
+    dw 0x005F, LOAD+completion_compare_start
+    dw 0xA5C9, 46
+    dw 0x0302
+    dw 0x005F, LOAD+completion_read
+completion_compare_start:
+    dw 0x15C3, 8
+completion_compare:
+    dw 0x9440
+    dw 0x8BC0
+    dw 0x0202
+    dw 0x005F, LOAD+completion_match
+    dw 0x0BC3
+    dw 0x0202
+    dw 0x005F, LOAD+completion_read
+    dw 0xA480
+    dw 0x0302
+    dw 0x005F, LOAD+completion_read
+    dw 0x0AC3
+    dw 0x005F, LOAD+completion_compare
+completion_match:
+    dw 0x0A9F, LOAD+completion_matches
+    dw 0x17C2, LOAD+completion_dir_length
+    dw 0x0BC2
+    dw 0x0202
+    dw 0x005F, LOAD+completion_name
+    dw 0x17C1, LOAD+completion_arg
+    dw 0x09DF, LOAD+write_string
+completion_name:
+    dw 0x15C1, LOAD+completion_entry+2
+    dw 0x1043
+    dw 0x0A02
+completion_name_length:
+    dw 0x25C2, 8
+    dw 0x0202
+    dw 0x005F, LOAD+completion_print
+    dw 0x8BCB
+    dw 0x0202
+    dw 0x005F, LOAD+completion_print
+    dw 0x0A82
+    dw 0x0A83
+    dw 0x005F, LOAD+completion_name_length
+completion_print:
+    dw 0x09DF, LOAD+write_string
+    dw 0x15C1, LOAD+newline
+    dw 0x15C2, 1
+    dw 0x09DF, LOAD+write_string
+    dw 0x25DF, 16, LOAD+completion_matches
+    dw 0x0202
+    dw 0x005F, LOAD+completion_limit
+    dw 0x005F, LOAD+completion_read
+completion_next_directory:
+    dw 0x17C0, LOAD+completion_fd
+    dw 0x8906
+    dw 0x0BDF, LOAD+completion_phase
+    dw 0x0202
+    dw 0x005F, LOAD+completion_finished
+    dw 0x0A1F, LOAD+completion_phase
+    dw 0x15C1, LOAD+bin_directory
+    dw 0x005F, LOAD+completion_open
+completion_finished:
+    dw 0x0BDF, LOAD+completion_matches
+    dw 0x0302
+    dw 0x005F, LOAD+builtin_done
+    dw 0x15C1, LOAD+completion_empty_message
+    dw 0x15C2, completion_empty_message_end-completion_empty_message
+    dw 0x09DF, LOAD+write_string
+    dw 0x005F, LOAD+builtin_done
+completion_limit:
+    dw 0x17C0, LOAD+completion_fd
+    dw 0x8906
+    dw 0x15C1, LOAD+completion_limit_message
+    dw 0x15C2, completion_limit_message_end-completion_limit_message
+    dw 0x09DF, LOAD+write_string
+    dw 0x005F, LOAD+builtin_done
+completion_read_error:
+    dw 0x17C0, LOAD+completion_fd
+    dw 0x8906
+completion_open_error:
+    dw 0x15C1, LOAD+completion_error_message
+    dw 0x15C2, completion_error_message_end-completion_error_message
+    dw 0x005F, LOAD+report_error
+history_control:
+    dw 0x09DF, LOAD+stateful_begin
+    dw 0x17C1, LOAD+arguments+2
+    dw 0x15C2, LOAD+clear_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+clear_history_builtin
+    dw 0x17C1, LOAD+arguments+2
+    dw 0x15C2, LOAD+off_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+disable_history
+    dw 0x17C1, LOAD+arguments+2
+    dw 0x15C2, LOAD+on_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+enable_history
+    dw 0x005F, LOAD+argument_error
+disable_history:
+    dw 0x0A1F, LOAD+history_enabled
+clear_history_builtin:
+    dw 0x09DF, LOAD+clear_history
+    dw 0x005F, LOAD+prompt
+enable_history:
+    dw 0x15DF, 1, LOAD+history_enabled
+    dw 0x005F, LOAD+prompt
+show_history:
+    dw 0x09DF, LOAD+pure_begin
+    dw 0x0BDF, LOAD+history_count
+    dw 0x0202
+    dw 0x005F, LOAD+empty_history
+    dw 0x0A04
+history_row:
+    dw 0x1100                       ; MOV R4,R0: display indices 1..4
+    dw 0x65C0, 49
+    dw 0x901F, LOAD+history_prefix
+    dw 0x15C1, LOAD+history_prefix
+    dw 0x15C2, 2
+    dw 0x09DF, LOAD+write_string
+    dw 0x1100
+    dw 0x09DF, LOAD+history_address
+    dw 0x1081
+    dw 0x1043
+history_length:
+    dw 0x8BD3                       ; TSTB (R3)+
+    dw 0x0302
+    dw 0x005F, LOAD+history_length
+    dw 0x0AC3
+    dw 0x10C2
+    dw 0xE042                       ; SUB R1,R2
+    dw 0x09DF, LOAD+write_string
+    dw 0x15C1, LOAD+newline
+    dw 0x15C2, 1
+    dw 0x09DF, LOAD+write_string
+    dw 0x0A84
+    dw 0x211F, LOAD+history_count
+    dw 0x0302
+    dw 0x005F, LOAD+history_row
+    dw 0x005F, LOAD+builtin_done
+empty_history:
+    dw 0x15C1, LOAD+history_empty_message
+    dw 0x15C2, history_empty_message_end-history_empty_message
+    dw 0x09DF, LOAD+write_string
+    dw 0x005F, LOAD+builtin_done
+startup_script:
+    dw 0x15DF, 1, LOAD+file_mode
+open_source:
+    dw 0x105F, LOAD+source_filename
+    dw 0x105F, LOAD+source_stat_arg
+    dw 0x8912
+source_stat_arg:
+    dw 0, LOAD+file_stat
+    dw 0x8602
+    dw 0x005F, LOAD+source_error
+    dw 0x35DF, 0x4000, LOAD+file_stat+2
+    dw 0x0302
+    dw 0x005F, LOAD+source_error
+    dw 0x17C0, LOAD+file_stat
+    dw 0x2017, 41                   ; device inodes 1..40 are not command files
+    dw 0x0402
+    dw 0x005F, LOAD+source_error
+    dw 0x8905
+source_filename:
+    dw 0, 0
+    dw 0x8602
+    dw 0x005F, LOAD+source_error
+    dw 0x101F, LOAD+read_fd
+    dw 0x005F, LOAD+prompt
+finish_source:
+    dw 0x17C0, LOAD+read_fd
+    dw 0x0BC0
+    dw 0x0202
+    dw 0x005F, LOAD+leave
+    dw 0x8906
+    dw 0x0A1F, LOAD+read_fd
+    dw 0x0BDF, LOAD+file_mode
+    dw 0x0302
+    dw 0x005F, LOAD+leave
+    dw 0x0BDF, LOAD+command_mode
+    dw 0x0302
+    dw 0x005F, LOAD+leave
+    dw 0x005F, LOAD+prompt
+command_string:
+    dw 0x17C1, LOAD+pending_command
+    dw 0x0BC1
+    dw 0x0202
+    dw 0x005F, LOAD+leave
+    dw 0x0A1F, LOAD+pending_command
+    dw 0x15C5, LOAD+line_buffer
+    dw 0x0A04
+copy_command:
+    dw 0x9440
+    dw 0x8BC0
+    dw 0x0202
+    dw 0x005F, LOAD+terminate_line
+    dw 0xA5C0, 10
+    dw 0x0202
+    dw 0x005F, LOAD+syntax_error
+    dw 0xA5C0, 9
+    dw 0x0202
+    dw 0x005F, LOAD+copy_command_byte
+    dw 0xB5C0, 0x60
+    dw 0x0202
+    dw 0x005F, LOAD+syntax_error
+copy_command_byte:
+    dw 0x25C4, 119
+    dw 0x0202
+    dw 0x005F, LOAD+report_long_input
+    dw 0x9015
+    dw 0x0A84
+    dw 0x005F, LOAD+copy_command
+usage_error:
+    dw 0x15C1, LOAD+usage_message
+    dw 0x15C2, usage_message_end-usage_message
+    dw 0x09DF, LOAD+write_error
+    dw 0x005F, LOAD+leave
+source_error:
+    dw 0x15C1, LOAD+source_message
+    dw 0x15C2, source_message_end-source_message
+    dw 0x0BDF, LOAD+file_mode
+    dw 0x0302
+    dw 0x005F, LOAD+fatal_source_error
+    dw 0x005F, LOAD+report_error
+fatal_source_error:
+    dw 0x09DF, LOAD+write_error
+    dw 0x005F, LOAD+leave
+nested_source_error:
+    dw 0x15C1, LOAD+nested_source_message
+    dw 0x15C2, nested_source_message_end-nested_source_message
+    dw 0x005F, LOAD+report_error
+; Session history contains only successfully parsed interactive input.
+; Recall does not add a duplicate; history commands and source-file bodies
+; are excluded. No history file is created on either emulated disk.
+prepare_history:
+    dw 0x0A1F, LOAD+history_candidate_valid
+    dw 0x15C1, LOAD+line_buffer
+history_leading_space:
+    dw 0x9240
+    dw 0xA5C0, 32
+    dw 0x0203
+    dw 0x0A81
+    dw 0x005F, LOAD+history_leading_space
+    dw 0xA5C0, 9
+    dw 0x0203
+    dw 0x0A81
+    dw 0x005F, LOAD+history_leading_space
+    dw 0xA5C0, 33
+    dw 0x0302
+    dw 0x005F, LOAD+save_history_candidate
+    dw 0x0BDF, LOAD+read_fd
+    dw 0x0302
+    dw 0x005F, LOAD+history_abort
+    dw 0x0BDF, LOAD+command_mode
+    dw 0x0302
+    dw 0x005F, LOAD+history_abort
+    dw 0x0A81
+    dw 0x9440
+    dw 0xA5C0, 33
+    dw 0x0202
+    dw 0x005F, LOAD+latest_history
+    dw 0x2017, 49                   ; CMP R0,#'1'
+    dw 0x0402
+    dw 0x005F, LOAD+history_abort
+    dw 0x2017, 52                   ; CMP R0,#'4'
+    dw 0x0702
+    dw 0x005F, LOAD+history_abort
+    dw 0xE5C0, 49
+    dw 0x005F, LOAD+recall_tail
+latest_history:
+    dw 0x17C0, LOAD+history_count
+    dw 0x0BC0
+    dw 0x0202
+    dw 0x005F, LOAD+history_abort
+    dw 0x0AC0
+recall_tail:
+    dw 0x1004
+recall_tail_byte:
+    dw 0x9443
+    dw 0x8BC3
+    dw 0x0202
+    dw 0x005F, LOAD+recall_selected
+    dw 0xA5C3, 32
+    dw 0x0202
+    dw 0x005F, LOAD+recall_tail_byte
+    dw 0xA5C3, 9
+    dw 0x0202
+    dw 0x005F, LOAD+recall_tail_byte
+    dw 0x005F, LOAD+history_abort
+recall_selected:
+    dw 0x1100
+    dw 0x201F, LOAD+history_count
+    dw 0x0502
+    dw 0x005F, LOAD+history_abort
+    dw 0x09DF, LOAD+history_address
+    dw 0x1081
+    dw 0x15C2, LOAD+line_buffer
+recall_copy:
+    dw 0x9452
+    dw 0x0302
+    dw 0x005F, LOAD+recall_copy
+    dw 0xE5C2, LOAD+line_buffer+1
+    dw 0x15C1, LOAD+line_buffer
+    dw 0x09DF, LOAD+write_string
+    dw 0x15C1, LOAD+newline
+    dw 0x15C2, 1
+    dw 0x09DF, LOAD+write_string
+    dw 0x0087
+history_abort:
+    dw 0x0BD6
+    dw 0x15C1, LOAD+history_error_message
+    dw 0x15C2, history_error_message_end-history_error_message
+    dw 0x005F, LOAD+report_error
+save_history_candidate:
+    dw 0x0BDF, LOAD+read_fd
+    dw 0x0302
+    dw 0x005F, LOAD+history_ready
+    dw 0x0BDF, LOAD+command_mode
+    dw 0x0302
+    dw 0x005F, LOAD+history_ready
+    dw 0x0BDF, LOAD+history_enabled
+    dw 0x0202
+    dw 0x005F, LOAD+history_ready
+    dw 0x15C1, LOAD+line_buffer
+    dw 0x15C2, LOAD+history_candidate
+candidate_copy:
+    dw 0x9452
+    dw 0x0302
+    dw 0x005F, LOAD+candidate_copy
+    dw 0x15DF, 1, LOAD+history_candidate_valid
+history_ready:
+    dw 0x0087
+commit_history:
+    dw 0x0BDF, LOAD+history_candidate_valid
+    dw 0x0202
+    dw 0x005F, LOAD+history_ready
+    dw 0x17C1, LOAD+arguments
+    dw 0x15C2, LOAD+history_name
+    dw 0x09DF, LOAD+equal_string
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+history_ready
+    dw 0x25DF, 4, LOAD+history_count
+    dw 0x0202
+    dw 0x005F, LOAD+shift_history
+    dw 0x17C0, LOAD+history_count
+    dw 0x0A9F, LOAD+history_count
+    dw 0x005F, LOAD+insert_history
+shift_history:
+    dw 0x15C1, LOAD+history_buffer+120
+    dw 0x15C2, LOAD+history_buffer
+    dw 0x15C3, 360
+history_shift_byte:
+    dw 0x9452
+    dw 0x0AC3
+    dw 0x0302
+    dw 0x005F, LOAD+history_shift_byte
+    dw 0x15C0, 3
+insert_history:
+    dw 0x09DF, LOAD+history_address
+    dw 0x15C1, LOAD+history_candidate
+history_insert_byte:
+    dw 0x9452
+    dw 0x0302
+    dw 0x005F, LOAD+history_insert_byte
+    dw 0x0087
+history_address:
+    dw 0x0CC0
+    dw 0x1C02, LOAD+history_addresses
+    dw 0x0087
+clear_history:
+    dw 0x0A1F, LOAD+history_count
+    dw 0x0A1F, LOAD+history_candidate_valid
+    dw 0x15C1, LOAD+history_buffer
+    dw 0x15C3, 608
+history_clear_byte:
+    dw 0x8A11
+    dw 0x0AC3
+    dw 0x0302
+    dw 0x005F, LOAD+history_clear_byte
+    dw 0x0087
+empty_command:
+    dw 0x09DF, LOAD+has_redirect
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+syntax_error
+    dw 0x005F, LOAD+prompt
+has_redirect:
+    dw 0x17C0, LOAD+input_path
+    dw 0x57C0, LOAD+output_path
+    dw 0x0087
+stateful_begin:
+    dw 0x09DF, LOAD+has_redirect
+    dw 0x0BC0
+    dw 0x0302
+    dw 0x005F, LOAD+stateful_redirect_abort
+    dw 0x0087
+stateful_redirect_abort:
+    dw 0x0BD6
+    dw 0x15C1, LOAD+builtin_redirect_message
+    dw 0x15C2, builtin_redirect_message_end-builtin_redirect_message
+    dw 0x005F, LOAD+report_error
+pure_begin:
+    dw 0x09DF, LOAD+has_redirect
+    dw 0x0BC0
+    dw 0x0202
+    dw 0x005F, LOAD+pure_ready
+    dw 0x0BDF, LOAD+in_child
+    dw 0x0302
+    dw 0x005F, LOAD+pure_ready
+    dw 0x0BD6
+    dw 0x005F, LOAD+fork_command
+pure_ready:
+    dw 0x0087
+builtin_done:
+    dw 0x0BDF, LOAD+in_child
+    dw 0x0302
+    dw 0x005F, LOAD+leave
+    dw 0x005F, LOAD+prompt
+input_redirect_error:
+    dw 0x15C1, LOAD+input_redirect_message
+    dw 0x15C2, input_redirect_message_end-input_redirect_message
+    dw 0x005F, LOAD+child_error
+output_redirect_error:
+    dw 0x15C1, LOAD+output_redirect_message
+    dw 0x15C2, output_redirect_message_end-output_redirect_message
+child_error:
+    dw 0x09DF, LOAD+write_error
+    dw 0x005F, LOAD+leave
+report_input_error:
+    dw 0x25DF, 1, LOAD+line_error
+    dw 0x0202
+    dw 0x005F, LOAD+report_long_input
+    dw 0x25DF, 3, LOAD+line_error
+    dw 0x0202
+    dw 0x005F, LOAD+report_multiline_input
+    dw 0x15C1, LOAD+terminal_message
+    dw 0x15C2, terminal_message_end-terminal_message
+    dw 0x005F, LOAD+report_error
+report_multiline_input:
+    dw 0x15C1, LOAD+multiline_message
+    dw 0x15C2, multiline_message_end-multiline_message
+    dw 0x005F, LOAD+report_error
+report_long_input:
+    dw 0x15C1, LOAD+long_message
+    dw 0x15C2, long_message_end-long_message
+    dw 0x005F, LOAD+report_error
+argument_error:
+    dw 0x15C1, LOAD+argument_message
+    dw 0x15C2, argument_message_end-argument_message
+    dw 0x005F, LOAD+report_error
+syntax_error:
+    dw 0x15C1, LOAD+syntax_message
+    dw 0x15C2, syntax_message_end-syntax_message
+    dw 0x005F, LOAD+report_error
+quote_error:
+    dw 0x15C1, LOAD+quote_message
+    dw 0x15C2, quote_message_end-quote_message
+    dw 0x005F, LOAD+report_error
+directory_error:
+    dw 0x15C1, LOAD+directory_message
+    dw 0x15C2, directory_message_end-directory_message
+    dw 0x005F, LOAD+report_error
+fork_error:
+    dw 0x15C1, LOAD+fork_message
+    dw 0x15C2, fork_message_end-fork_message
+    dw 0x005F, LOAD+report_error
+wait_error:
+    dw 0x15C1, LOAD+wait_message
+    dw 0x15C2, wait_message_end-wait_message
+report_error:
+    dw 0x09DF, LOAD+write_error
+    dw 0x005F, LOAD+builtin_done
+read_error:
+    dw 0x15C1, LOAD+read_message
+    dw 0x15C2, read_message_end-read_message
+    dw 0x09DF, LOAD+write_string
+    dw 0x005F, LOAD+leave
+; R1=string, R2=length. The V1 syscall argument words are writable data.
+write_string:
+    dw 0x15C0, 1
+    dw 0x005F, LOAD+write_fd
+write_error:
+    dw 0x17C0, LOAD+error_fd
+write_fd:
+    dw 0x105F, LOAD+write_pointer
+    dw 0x109F, LOAD+write_count
+    dw 0x8904
+write_pointer:
+    dw 0
+write_count:
+    dw 0
+    dw 0x0087                       ; RTS PC
+; R1,R2=NUL-terminated strings; R0=1 if equal, otherwise 0.
+equal_string:
+    dw 0x9440                       ; MOVB (R1)+,R0
+    dw 0xA480                       ; CMPB (R2)+,R0
+    dw 0x0302
+    dw 0x005F, LOAD+not_equal
+    dw 0x8BC0
+    dw 0x0202
+    dw 0x005F, LOAD+is_equal
+    dw 0x005F, LOAD+equal_string
+not_equal:
+    dw 0x0A00
+    dw 0x0087
+is_equal:
+    dw 0x15C0, 1
+    dw 0x0087
+banner_color:
+    db 27, "[96mJash/11: native PDP-11 shell, Unix V1 edition.", 27, "[0m", 10
+banner_color_end:
+banner:
+    db "Jash/11: native PDP-11 shell, Unix V1 edition.", 10
+banner_end:
+color_prompt:
+    db 27, "[97m", 27, "[1m"
+prompt_mark:
+    db "#", 27, "[0m "
+color_prompt_end:
+plain_prompt:
+    db "# "
+exit_name: db "exit", 0
+help_name: db "help", 0
+version_name: db "version", 0
+plain_name: db "plain", 0
+color_name: db "color", 0
+cd_name: db "cd", 0
+chdir_name: db "chdir", 0
+source_name: db "source", 0
+history_name: db "history", 0
+complete_name: db "complete", 0
+echo_name: db "echo", 0
+echo_no_newline: db "-n", 0
+space_byte: db " "
+dot_directory: db ".", 0
+bin_directory: db "/bin", 0
+clear_name: db "clear", 0
+off_name: db "off", 0
+on_name: db "on", 0
+newline: db 10
+history_prefix: db "1 "
+option_plain: db "-p", 0
+option_command: db "-c", 0
+console_name: db "/dev/tty8", 0
+unsupported: db 34, 39, 36, 38, 59, 124, 60, 62, 92, 40, 41, 42, 63, 91, 93, 96, 126, 0
+help_message:
+    db "Jash/11 1.0: echo, help, version, exit, cd, chdir, plain, color.", 10
+    db "source FILE; history [clear|off|on]; !!; !1..!4; complete PREFIX.", 10
+    db "Quotes/escapes, < > >>; maximum 8 arguments and 119 input bytes.", 10
+    db "Single-line terminal paste is accepted; multiline paste is discarded.", 10
+    db "Pipes, jobs, expansion and globbing are not supported.", 10
+help_message_end:
+version_message: db "Jash/11 1.0 (native Unix V1 edition)", 10
+version_message_end:
+argument_message: db "Invalid argument count (maximum 8).", 10
+argument_message_end:
+syntax_message: db "Unsupported shell syntax.", 10
+syntax_message_end:
+quote_message: db "Unterminated quote or escape; command discarded.", 10
+quote_message_end:
+directory_message: db "Cannot change directory.", 10
+directory_message_end:
+fork_message: db "Cannot create process.", 10
+fork_message_end:
+wait_message: db "Cannot wait for process.", 10
+wait_message_end:
+exec_message: db "Cannot execute command.", 10
+exec_message_end:
+read_message: db "Cannot read command.", 10
+read_message_end:
+long_message: db "Input line too long; command discarded.", 10
+long_message_end:
+terminal_message: db "Unsupported terminal escape or control input; command discarded.", 10
+terminal_message_end:
+multiline_message: db "Multiline paste is not supported; entire paste discarded.", 10
+multiline_message_end:
+input_redirect_message: db "Cannot redirect input.", 10
+input_redirect_message_end:
+output_redirect_message: db "Cannot redirect output.", 10
+output_redirect_message_end:
+builtin_redirect_message: db "Redirection is not supported for this builtin.", 10
+builtin_redirect_message_end:
+usage_message: db "Usage: jash [-p] [-c COMMAND | FILE]", 10
+usage_message_end:
+source_message: db "Cannot open command file.", 10
+source_message_end:
+nested_source_message: db "Nested source is not supported.", 10
+nested_source_message_end:
+history_empty_message: db "History is empty.", 10
+history_empty_message_end:
+history_error_message: db "History entry is unavailable (interactive !! or !1..!4).", 10
+history_error_message_end:
+completion_empty_message: db "No completions.", 10
+completion_empty_message_end:
+completion_limit_message: db "Completion limit reached (16).", 10
+completion_limit_message_end:
+completion_error_message: db "Cannot open completion directory.", 10
+completion_error_message_end:
+    align 2
+colored: dw 1
+argument_count: dw 0
+word_open: dw 0
+redirect_pending: dw 0
+input_path: dw 0
+output_path: dw 0
+append_mode: dw 0
+in_child: dw 0
+error_fd: dw 1
+read_fd: dw 0
+file_mode: dw 0
+command_mode: dw 0
+startup_file: dw 0
+pending_command: dw 0
+history_enabled: dw 1
+history_count: dw 0
+history_candidate_valid: dw 0
+history_addresses: dw LOAD+history_buffer, LOAD+history_buffer+120, LOAD+history_buffer+240, LOAD+history_buffer+360
+completion_arg: dw 0
+completion_prefix: dw 0
+completion_dir_length: dw 0
+completion_phase: dw 0
+completion_matches: dw 0
+completion_fd: dw 0
+echo_newline: dw 1
+input_byte: dw 0
+line_error: dw 0
+paste_active: dw 0
+escape_state: dw 0
+escape_kind: dw 0
+arguments: dw 0, 0, 0, 0, 0, 0, 0, 0, 0
+line_buffer:
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+path_buffer: db "/bin/"
+path_tail:
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    dw 0, 0, 0, 0, 0, 0, 0, 0
+    align 2
+history_buffer: resb 480
+history_candidate: resb 128
+completion_directory_buffer: resb 128
+completion_entry: resb 10
+file_stat: resb 34
+image_end:

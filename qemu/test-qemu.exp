@@ -1,0 +1,68 @@
+#!/usr/bin/expect -f
+# Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+# License: original unix-v1 terms; see ../LICENSE.
+#
+# Exercise the public launcher, including rebuilding its initramfs.
+set timeout 180
+set root [file normalize [file join [file dirname [info script]] ..]]
+set child ""
+
+proc await {pattern description} {
+    global spawn_id
+    expect {
+        -re $pattern { return $expect_out(buffer) }
+        timeout { error "timeout waiting for $description" }
+        eof { error "QEMU exited while waiting for $description" }
+    }
+}
+
+proc command {text pattern} {
+    global spawn_id
+    send -- "$text\r"
+    set output [await {(^|[\r\n])# } "shell after '$text'"]
+    if {$pattern ne "" && ![regexp -- $pattern $output]} {
+        error "unexpected output for '$text': $output"
+    }
+}
+
+proc test {} {
+    global root child spawn_id
+    # TCG works without access to /dev/kvm. KERNEL is honored by the launcher.
+    spawn -noecho [file join $root qemu run-qemu.sh] --no-kvm
+    set child [exp_pid]
+    await {unix-v1 QEMU guest} "Linux guest init"
+    await {login:} "Unix V1 login"
+    send -- "root\r"
+    await {(^|[\r\n])# } "root shell"
+    command "ls -l" {[ \t]bin[\r\n]}
+    command "chdir /usr" {}
+    command "ls" {(^|[\r\n])src[\r\n]}
+    command "chdir /" {}
+    command "echo qemu-rf-ok >/tmp/qtest" {}
+    command "cat /tmp/qtest" {(^|[\r\n])qemu-rf-ok[ \r\n]}
+    command "echo qemu-rk-ok >/usr/qtest" {}
+    command "cat /usr/qtest" {(^|[\r\n])qemu-rk-ok[ \r\n]}
+    command "rm /tmp/qtest /usr/qtest" {}
+    send -- "\001x"
+    expect {
+        eof {}
+        timeout { error "QEMU did not exit after Ctrl-A X" }
+    }
+    set status [wait]
+    set child ""
+    if {[lindex $status 2] != 0 || [lindex $status 3] != 0} {
+        error "QEMU exit status: $status"
+    }
+    puts "\n\[TEST\] ALL PASS: QEMU -> Linux -> SIMH -> Unix V1"
+}
+
+if {[catch {test} message]} {
+    puts stderr "\n\[TEST\] FAIL: $message"
+    if {$child ne ""} {
+        catch {exec kill -TERM $child}
+        catch {close}
+        catch {wait}
+    }
+    exit 1
+}
+exit 0

@@ -1,0 +1,112 @@
+#!/usr/bin/expect -f
+# Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+# License: original unix-v1 terms; see ../../LICENSE.
+#
+# Boot the real V1 disks, check RF/RK access and persistent guest writes.
+# Always use private copies: tests must not modify images/ or build/.
+set timeout 45
+set root [file normalize [file join [file dirname [info script]] ../..]]
+set binary [file join $root bemu-pdp11 bemu-pdp11]
+set rf [file join $root build rf0.dsk]
+set rk [file join $root build rk0.dsk]
+if {$argc == 2} {
+    set rf [file normalize [lindex $argv 0]]
+    set rk [file normalize [lindex $argv 1]]
+} elseif {$argc != 0} {
+    puts stderr "Usage: $argv0 ?rf0.dsk rk0.dsk?"
+    exit 2
+}
+set temporary ""
+set child ""
+
+proc cleanup {} {
+    global temporary child spawn_id
+    if {$child ne ""} {
+        catch {exec kill -TERM $child}
+        catch {close}
+        catch {wait}
+    }
+    if {$temporary ne ""} { file delete -force $temporary }
+}
+
+proc await {pattern description} {
+    global spawn_id
+    expect {
+        -re $pattern { return $expect_out(buffer) }
+        timeout { error "timeout waiting for $description" }
+        eof { error "emulator exited while waiting for $description" }
+    }
+}
+
+proc command {text {pattern {}}} {
+    global spawn_id
+    send -- "$text\r"
+    set output [await {(^|[\r\n])# } "shell after '$text'"]
+    if {$pattern ne "" && ![regexp -- $pattern $output]} {
+        error "unexpected output for '$text': $output"
+    }
+    return $output
+}
+
+proc test {} {
+    global binary rf rk temporary child spawn_id env
+    set exit_bytes "\005"
+    set exit_label "Ctrl-E"
+    if {[info exists env(BEMU_TEST_EXIT)]} {
+        switch -- $env(BEMU_TEST_EXIT) {
+            ctrl-a-x { set exit_bytes "\001x"; set exit_label "Ctrl-A X" }
+            ctrl-x-a { set exit_bytes "\030a"; set exit_label "Ctrl-X A" }
+            ctrl-e {}
+            default { error "unknown BEMU_TEST_EXIT value" }
+        }
+    }
+    foreach path [list $binary $rf $rk] {
+        if {![file readable $path]} { error "missing $path (run make first)" }
+    }
+    set base /tmp
+    if {[info exists env(TMPDIR)]} { set base $env(TMPDIR) }
+    set temporary [exec mktemp -d [file join $base bemu-boot.XXXXXX]]
+    file copy $rf [file join $temporary rf0.dsk]
+    file copy $rk [file join $temporary rk0.dsk]
+    spawn -noecho $binary [file join $temporary rf0.dsk] [file join $temporary rk0.dsk]
+    set child [exp_pid]
+    await {login:} login
+    send -- "root\r"
+    await {(^|[\r\n])# } "root shell"
+    puts "\n\[TEST\] root login PASS"
+
+    set listing [command "ls -l" {[ \t]bin[\r\n]}]
+    if {![regexp {[ \t]usr[\r\n]} $listing]} { error "missing mounted /usr" }
+    puts "\n\[TEST\] ls -l / (RF + RK stat) PASS"
+    command "chdir /usr"
+    command "ls" {(^|[\r\n])src[\r\n]}
+    puts "\n\[TEST\] chdir /usr + ls (RK read) PASS"
+    # The V1 shell requires the filename immediately after '>'.
+    command "echo bemu-write-ok >/tmp/bemu"
+    command "cat /tmp/bemu" {(^|[\r\n])bemu-write-ok[ \r\n]}
+    command "rm /tmp/bemu"
+    command "echo bemu-rk-ok >/usr/bemu"
+    command "cat /usr/bemu" {(^|[\r\n])bemu-rk-ok[ \r\n]}
+    command "rm /usr/bemu"
+    puts "\n\[TEST\] guest file write/read (RF + RK) PASS"
+
+    send -- $exit_bytes
+    expect {
+        eof {}
+        timeout { error "$exit_label did not exit from the historical shell" }
+    }
+    set status [wait]
+    set child ""
+    if {[lindex $status 2] != 0 || [lindex $status 3] != 0} {
+        error "emulator exit status: $status"
+    }
+    puts "\n\[TEST\] ALL PASS: Unix V1 on Bemu-pdp11"
+}
+
+if {[catch {test} message]} {
+    puts stderr "\n\[TEST\] FAIL: $message"
+    cleanup
+    exit 1
+}
+cleanup
+exit 0

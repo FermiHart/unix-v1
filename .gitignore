@@ -1,3 +1,7 @@
+# Local integration additions:
+# Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+# License: original unix-v1 terms; see LICENSE.
+
 # intermediate files
 build/*.s
 build/*.dsk
@@ -22,3 +26,13 @@ tools/apout/*.o
 tools/mkfs
 tools/ml
 tools/pdp11
+
+# qemu guest build artifacts (scripts + cfgs are committed, outputs rebuilt)
+qemu/initramfs/
+qemu/initramfs.cpio.gz
+
+# Sensitive opt-in Bemu time-travel sessions are not source artifacts.
+*.btt
+
+# Generated diagnostics are local evidence, not source artifacts.
+*.log

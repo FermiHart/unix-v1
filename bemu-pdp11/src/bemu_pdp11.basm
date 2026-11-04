@@ -1,0 +1,4270 @@
+; bemu_pdp11.basm — Bemu-pdp11: PDP-11/20 emulator, 100% Basm.
+;
+; Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+; License: original unix-v1 terms; see ../../LICENSE.
+;
+; Target: boot Unix V1 (rf0.dsk/rk0.dsk) with the same device map as
+; simh.cfg: CPU 11/20 32KW, RF11 177460, RK11 177400, TC11 177340,
+; DL11 console 177560, DC11x8 174000, KW11-L clock 177546, KE11-A EAE.
+; Vectors (oct): TTYI 60, TTYO 64, CLK 100, RF 204, TC 214, RK 220,
+; DC 300-337. PSW at 177776.
+;
+; Build: Bear Basm -f elf64, link with ld, raw Linux syscalls, no libc.
+; Exit codes (family contract): 0 ok, 1 guest/runtime failure, 2 bad usage.
+;
+; Instruction core: EA (8 modes, word+byte), double-operand group,
+; branches, SOB, JMP/JSR/RTS, RTI/RTT, EMT/TRAP/BPT/IOT, SPL, MTPS/MFPS,
+; EAE (MUL/DIV/ASH/ASHC), XOR, CLR/ROT/SXT groups. MARK -> unimp trap.
+; Flag rules verified against SIMH pdp11_cpu.c.
+
+BITS 64
+section .bss
+pdp_mem:    resb 65536
+pdp_r:      resw 8
+psw_n:      resb 1
+psw_z:      resb 1
+psw_v:      resb 1
+psw_c:      resb 1
+psw_pri:    resb 1
+guest_cpu_end:
+dotrace:    resb 1
+trbuf:      resb 16
+rf_fd:      resd 1
+rk_fd:      resd 1
+rf_nwords:  resd 1
+rk_nblocks: resd 1
+test_mode:  resb 1
+arg_rf:     resq 1
+arg_rk:     resq 1
+arg_test:   resq 1
+statbuf:    resb 144
+; ---- device + host state ----
+raw_active: resb 1
+stdin_flags: resd 1              ; original F_GETFL value for clean exit
+stdin_flags_saved: resb 1
+escape_prefix: resb 1            ; host-only Ctrl-A/Ctrl-X escape state
+termios_saved: resb 64
+termios_rawbuf:   resb 64
+waitflag:   resb 1
+poll_cnt:   resd 1
+tick:       resd 1
+dumped:     resb 1
+last_tick:  resq 1              ; combined usec of last clock check
+tv_buf:     resb 16
+io_word:    resw 1
+fionread_n: resd 1
+in_byte:    resb 1
+; interrupt requests (BR level in dispatch order)
+irq_clk:    resb 1
+irq_rf:     resb 1
+irq_rk:     resb 1
+irq_dc_rx:  resb 8
+irq_dc_tx:  resb 8
+irq_tti:    resb 1
+irq_tto:    resb 1
+; DL11 console
+tks:         resb 1              ; bit7 DONE, bit6 IE
+tkb:         resb 1              ; last byte
+tkb_fifo:    resb 64             ; RX queue behind TKB (burst input)
+tkb_rd:      resb 1
+tkb_wr:      resb 1
+tkb_n:       resb 1
+tps:         resb 1              ; bit7 DONE(=1 idle), bit6 IE
+tpb:         resb 1
+; KW11-L clock
+lks:         resb 1              ; bit7 DONE, bit6 IE
+; RF11 (offsets from 177460 = 0xFF30)
+rf_dcs:      resw 1
+rf_wc:       resw 1
+rf_cma:      resw 1
+rf_dar:      resw 1
+rf_dae:      resw 1
+rf_db:       resw 1
+rf_mr:       resw 1
+; RK11 (offsets from 177400 = 0xFF00)
+rkds:        resw 1              ; constructed on read
+rker:        resw 1
+rkcs:        resw 1
+rkwc:        resw 1
+rkba:        resw 1
+rkda:        resw 1
+rkboff:      resd 1              ; DMA byte offset (r14 is mem base: do not use)
+rklock:      resb 1              ; software write-lock (WLK func)
+; DC11 mux lines (base 174000 = 0xF800, stride 8)
+dc_rcsr:     resb 8
+dc_rbuf:     resb 8
+dc_xcsr:     resb 8
+dc_xbuf:     resb 8
+; KE11-A EAE (177300-177317): MMIO addrs; AC/MQ/SC state + SR bits
+ke_regs:     resw 8
+ke_sr:       resb 1
+sr_val:      resw 1
+guest_devices_end:
+
+section .text
+global _start
+
+%define SYS_WRITE 1
+%define SYS_EXIT  60
+%define STDOUT    1
+%define STDERR    2
+
+_start:
+    mov     rax, SYS_WRITE
+    mov     rdi, STDERR
+    lea     rsi, [rel banner]
+    mov     rdx, banner_len
+    syscall
+    mov     r12, [rsp]                    ; argc
+    lea     r13, [rsp+8]                  ; argv
+    mov     r14, 1                        ; idx
+    lea     r15, [rel pdp_mem]            ; (reused below; r14/r15 restored)
+    jmp     .argloop
+.argnext:
+    inc     r14
+.argloop:
+    cmp     r14, r12
+    jae     .argsdone
+    mov     rsi, [r13+r14*8]
+    cmp     byte [rsi], '-'
+    jne     .positional
+    cmp     byte [rsi+1], '-'
+    jne     .positional
+    add     rsi, 2
+    lea     rdi, [rel opt_trace]
+    call    streq
+    test    eax, eax
+    jnz     .is_trace
+    lea     rdi, [rel opt_test]
+    mov     rsi, [r13+r14*8]
+    add     rsi, 2
+    call    streq
+    test    eax, eax
+    jnz     .is_test
+    call    tt_parse_option
+    test    eax, eax
+    jnz     .argnext
+    jmp     usage_err                     ; unknown --opt
+.is_trace:
+    mov     byte [rel dotrace], 1
+    jmp     .argnext
+.is_test:
+    mov     byte [rel test_mode], 1
+    inc     r14
+    cmp     r14, r12
+    jae     usage_err
+    mov     rax, [r13+r14*8]
+    mov     [rel arg_test], rax
+    jmp     .argnext
+.positional:
+    mov     rax, [rel arg_rf]
+    test    rax, rax
+    jnz     .have_rf
+    mov     rax, [r13+r14*8]
+    mov     [rel arg_rf], rax
+    jmp     .argnext
+.have_rf:
+    cmp     qword [rel arg_rk], 0
+    je      .second_disk
+    jmp     usage_err                     ; never silently replace a selected RK image
+.second_disk:
+    mov     rax, [r13+r14*8]
+    mov     [rel arg_rk], rax
+    jmp     .argnext
+.argsdone:
+    lea     r14, [rel pdp_mem]
+    lea     r15, [rel pdp_r]
+    mov     dword [rel poll_cnt], 1024
+    mov     word [rel sr_val], 0xF7C0
+    mov     word [rel rf_dcs], 0x0080 ; RF idle: DONE=1
+    mov     word [rel rkcs], 0x0080   ; RK idle: DONE=1
+    mov     byte [rel tps], 0x80      ; transmitter idle
+    mov     byte [rel dc_xcsr+0], 0x80
+    mov     byte [rel dc_xcsr+1], 0x80
+    mov     byte [rel dc_xcsr+2], 0x80
+    mov     byte [rel dc_xcsr+3], 0x80
+    mov     byte [rel dc_xcsr+4], 0x80
+    mov     byte [rel dc_xcsr+5], 0x80
+    mov     byte [rel dc_xcsr+6], 0x80
+    mov     byte [rel dc_xcsr+7], 0x80
+    call    termios_make_raw
+    call    set_nonblock
+    call    tt_start_replay
+    test    eax, eax
+    jz      .not_replay
+    jmp     main_loop
+.not_replay:
+    cmp     byte [rel test_mode], 0
+    jne     .loadtest
+    call    open_disks
+    jmp     .bootrom
+.loadtest:
+    cmp     byte [rel tt_enabled], 0
+    je      .test_file
+    cmp     qword [rel arg_rf], 0
+    je      .test_file
+    call    open_disks
+.test_file:
+    mov     rax, 2                        ; sys_open
+    mov     rdi, [rel arg_test]
+    mov     rsi, 0                        ; O_RDONLY
+    xor     rdx, rdx
+    syscall
+    cmp     rax, 0
+    jl      fail_open
+    mov     r12d, eax                     ; fd
+    xor     r13d, r13d                    ; total
+.rdloop:
+    mov     rax, 0                        ; sys_read
+    mov     edi, r12d
+    lea     rsi, [rel pdp_mem]
+    add     rsi, r13
+    mov     rdx, 65536
+    sub     rdx, r13
+    syscall
+    cmp     rax, 0
+    jle     .rdend
+    add     r13, rax
+    cmp     r13, 65536
+    jb      .rdloop
+.rdend:
+    mov     rax, 3                        ; sys_close
+    mov     edi, r12d
+    syscall
+    xor     ebx, ebx                      ; PC=0 (R7 already 0)
+    mov     [r15+14], bx
+    call    tt_init
+    jmp     main_loop
+.bootrom:
+    lea     rsi, [rel m792rom]
+    lea     rdi, [rel pdp_mem]
+    add     rdi, 0x77C0
+    mov     ecx, 16
+.copy:
+    mov     ax, [rsi]
+    mov     [rdi], ax
+    add     rsi, 2
+    add     rdi, 2
+    dec     ecx
+    jnz     .copy
+    mov     word [r15+14], 0x77C0    ; PC = M792 ROM entry
+    call    tt_init
+    jmp     main_loop
+
+; ---- memory access ----
+rd16:
+    test    edi, 1
+    jz      .ok1
+    jmp     crash_odd
+.ok1:
+    cmp     edi, 0xE000
+    jb      .ok2
+    jmp     io_read16
+.ok2:
+    movzx   eax, word [r14+rdi]
+    ret
+wr16:
+    test    edi, 1
+    jz      .ok1
+    jmp     crash_odd
+.ok1:
+    cmp     edi, 0xE000
+    jb      .ok2
+    jmp     io_write16
+.ok2:
+    mov     [r14+rdi], ax
+    ret
+rd8:
+    cmp     edi, 0xE000
+    jb      .ok
+    jmp     io_read8
+.ok:
+    mov     al, [r14+rdi]
+    ret
+wr8:
+    cmp     edi, 0xE000
+    jb      .ok
+    jmp     io_write8
+.ok:
+    mov     [r14+rdi], al
+    ret
+
+; ---- IO page dispatch ----
+io_read16:                            ; edi=addr -> ax
+    cmp     edi, 0xF800
+    jb      .unmapped
+    cmp     edi, 0xF840
+    jae     .notdc
+    jmp     dc_read
+.notdc:
+    cmp     edi, 0xFEC0
+    jb      .unmapped
+    cmp     edi, 0xFED0
+    jae     .notke
+    jmp     ke_read
+.notke:
+    cmp     edi, 0xFF00
+    jb      .unmapped
+    cmp     edi, 0xFF10
+    jae     .notrk
+    jmp     rk_read
+.notrk:
+    cmp     edi, 0xFF30
+    jb      .unmapped
+    cmp     edi, 0xFF3F
+    jae     .notrf
+    jmp     rf_read
+.notrf:
+    cmp     edi, 0xFF66
+    jb      .unmapped
+    cmp     edi, 0xFF68
+    jae     .notclk
+    movzx   eax, byte [rel lks]
+    ret
+.notclk:
+    cmp     edi, 0xFF70
+    jb      .unmapped
+    cmp     edi, 0xFF78
+    jae     .notcon
+    jmp     con_read
+.notcon:
+    cmp     edi, 0xFF7A
+    jae     .notsr
+    movzx   eax, word [rel sr_val]
+    ret
+.notsr:
+    cmp     edi, 0xFFFE
+    jb      .unmapped
+    call    psw_get
+    ret
+.unmapped:
+    xor     eax, eax
+    ret
+
+io_write16:                           ; edi=addr, ax=value
+    cmp     edi, 0xF800
+    jb      .unmapped
+    cmp     edi, 0xF840
+    jae     .notdc
+    jmp     dc_write
+.notdc:
+    cmp     edi, 0xFEC0
+    jb      .unmapped
+    cmp     edi, 0xFED0
+    jae     .notke
+    jmp     ke_write
+.notke:
+    cmp     edi, 0xFF00
+    jb      .unmapped
+    cmp     edi, 0xFF10
+    jae     .notrk
+    jmp     rk_write
+.notrk:
+    cmp     edi, 0xFF30
+    jb      .unmapped
+    cmp     edi, 0xFF3F
+    jae     .notrf
+    jmp     rf_write
+.notrf:
+    cmp     edi, 0xFF66
+    jb      .unmapped
+    cmp     edi, 0xFF68
+    jae     .notclk
+    mov     ecx, eax
+    shr     ecx, 6
+    and     ecx, 1
+    test    al, 0x80
+    jnz     .keep
+    and     byte [rel lks], 0x40
+    jmp     .ie
+.keep:
+    or      byte [rel lks], 0x80
+.ie:
+    test    ecx, ecx
+    jz      .ie0
+    mov     al, [rel lks]
+    and     al, 0x80
+    or      al, 0x40
+    mov     [rel lks], al
+    test    al, 0x80
+    jz      .done
+    mov     byte [rel irq_clk], 1
+.done:
+    ret
+.ie0:
+    and     byte [rel lks], 0xBF
+    mov     byte [rel irq_clk], 0
+    ret
+.notclk:
+    cmp     edi, 0xFF70
+    jb      .unmapped
+    cmp     edi, 0xFF78
+    jae     .notcon
+    jmp     con_write
+.notcon:
+    cmp     edi, 0xFF7A
+    jae     .notsr
+    ret                               ; SR read-only
+.notsr:
+    cmp     edi, 0xFFFE
+    jb      .unmapped
+    call    psw_set
+    ret
+.unmapped:
+    ret
+
+io_read8:                             ; edi=addr -> al
+    mov     ecx, edi
+    push    rcx
+    and     edi, 0xFFFE
+    call    io_read16
+    mov     edx, eax
+    pop     rcx
+    test    cl, 1
+    jz      .lo
+    shr     edx, 8
+.lo:
+    mov     al, dl
+    ret
+
+io_write8:                            ; edi=addr, al=value
+    cmp     edi, 0xFEC0
+    jb      .notke8
+    cmp     edi, 0xFED0
+    jae     .notke8
+    jmp     ke_write_byte
+.notke8:
+    mov     ecx, edi
+    push    rcx
+    push    rax
+    and     edi, 0xFFFE
+    call    io_read16
+    mov     edx, eax
+    pop     rax
+    pop     rcx
+    test    cl, 1
+    jnz     .hi
+    and     edx, 0xFF00
+    movzx   eax, al
+    or      eax, edx
+    mov     edi, ecx
+    and     edi, 0xFFFE
+    jmp     io_write16
+.hi:
+    and     edx, 0x00FF
+    movzx   eax, al
+    shl     eax, 8
+    or      eax, edx
+    mov     edi, ecx
+    and     edi, 0xFFFE
+    jmp     io_write16
+
+; ---- KE11-A EAE (177300-177317): MMIO writes trigger arithmetic ----
+; Matches SIMH pdr semantics: DIV/MUL/LSH/ASH/NOR operate on AC:MQ,
+; MQ-store sign-extends into AC, SC read returns (SR<<8)|SC.
+ke_read:                                ; edi=addr -> ax (clobbers ecx,edx)
+    mov     ecx, edi
+    sub     ecx, 0xFEC0
+    shr     ecx, 1
+    cmp     ecx, 1
+    je      .ac
+    cmp     ecx, 2
+    je      .mq
+    cmp     ecx, 4
+    je      .sc
+    cmp     ecx, 5
+    je      .nor
+    xor     eax, eax
+    ret
+.ac:
+    lea     rdx, [rel ke_regs]
+    movzx   eax, word [rdx+2]
+    ret
+.mq:
+    lea     rdx, [rel ke_regs]
+    movzx   eax, word [rdx+4]
+    ret
+.nor:
+    lea     rdx, [rel ke_regs]
+    movzx   eax, word [rdx+8]
+    ret
+.sc:
+    lea     rdx, [rel ke_regs]
+    movzx   eax, word [rdx+8]
+    movzx   ecx, byte [rel ke_sr]
+    shl     ecx, 8
+    or      eax, ecx
+    ret
+
+ke_set_sr:                              ; recompute dynamic SR bits (clobbers rax,rcx,rdx)
+    lea     rdx, [rel ke_regs]
+    movzx   eax, word [rdx+2]           ; AC
+    movzx   ecx, word [rdx+4]           ; MQ
+    mov     dl, [rel ke_sr]
+    and     dl, 0xC1                    ; keep N,NXV,C
+    test    ecx, ecx
+    jnz     .s1
+    or      dl, 0x08                    ; MQZ
+.s1:
+    test    eax, eax
+    jnz     .s2
+    or      dl, 0x10                    ; ACZ
+    test    ecx, 0x8000
+    jnz     .s2
+    or      dl, 0x02                    ; SXT
+    test    ecx, ecx
+    jnz     .s2
+    or      dl, 0x04                    ; Z
+.s2:
+    cmp     eax, 0xFFFF
+    jne     .s3
+    or      dl, 0x20                    ; ACM1
+    test    ecx, 0x8000
+    jz      .s3
+    or      dl, 0x02                    ; SXT
+.s3:
+    mov     [rel ke_sr], dl
+    ret
+
+ke_write:                               ; edi=addr(even), ax=val
+    mov     ecx, edi
+    sub     ecx, 0xFEC0
+    shr     ecx, 1
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    push    r13
+    lea     r10, [rel ke_regs]
+ke_op_dispatch:                         ; r10=base, ecx=idx, ax=val, regs saved
+    cmp     ecx, 1
+    je      .ac
+    cmp     ecx, 2
+    je      .mq
+    cmp     ecx, 4
+    je      .sc
+    cmp     ecx, 0
+    je      .div
+    cmp     ecx, 3
+    je      .mul
+    cmp     ecx, 5
+    je      .nor
+    cmp     ecx, 6
+    je      .lsh
+    cmp     ecx, 7
+    je      .ash
+    jmp     .done
+.ac:
+    mov     [r10+2], ax
+    call    ke_set_sr
+    jmp     .done
+.mq:
+    mov     [r10+4], ax
+    movzx   edx, ax
+    shl     edx, 16
+    sar     edx, 31                     ; AC = sign word, not a copy of MQ
+    mov     [r10+2], dx
+    call    ke_set_sr
+    jmp     .done
+.sc:
+    mov     edx, eax
+    shr     edx, 8
+    and     edx, 0xC1
+    mov     [rel ke_sr], dl
+    and     eax, 0x3F
+    mov     [r10+8], ax
+    call    ke_set_sr
+    jmp     .done
+.div:
+    mov     byte [rel ke_sr], 0
+    movzx   r8d, word [r10+2]           ; AC
+    movzx   r9d, word [r10+4]           ; MQ
+    mov     ebx, r8d
+    shl     ebx, 16
+    or      ebx, r9d                    ; ebx = AC:MQ u32
+    mov     rsi, rax
+    shl     rsi, 48
+    sar     rsi, 48                     ; rsi = divisor sext
+    mov     r8, rbx
+    shl     r8, 32
+    sar     r8, 32                      ; r8 = dividend sext
+    mov     rax, r8
+    mov     rcx, rax
+    sar     rcx, 63
+    xor     rax, rcx
+    sub     rax, rcx                    ; rax = abs(dividend)
+    mov     rcx, rsi
+    mov     rdx, rcx
+    sar     rdx, 63
+    xor     rcx, rdx
+    sub     rcx, rdx                    ; rcx = abs(divisor)
+    shr     rax, 16
+    cmp     rax, rcx
+    jae     .divov
+    mov     word [r10+8], 0             ; SC=0
+    mov     rax, r8
+    cqo
+    idiv    rsi                         ; rax=quo rdx=rem
+    mov     [r10+4], ax
+    mov     [r10+2], dx
+    cmp     rax, 32767
+    jg      .divnx
+    mov     r11, rax
+    add     r11, 32768
+    cmp     r11, 65535
+    ja      .divnx
+    jmp     .divng
+.divnx:
+    or      byte [rel ke_sr], 0x80
+.divng:
+    movzx   eax, word [r10+4]
+    test    eax, 0x8000
+    jz      .divsr
+    xor     byte [rel ke_sr], 0xC0
+.divsr:
+    call    ke_set_sr
+    jmp     .done
+.divov:
+    mov     edx, r8d
+    mov     ecx, esi
+    xor     edx, ecx
+    shr     edx, 15
+    and     edx, 1
+    xor     edx, 1                      ; edx = sign (1 if signs match)
+    mov     eax, r8d
+    shl     eax, 1
+    mov     r11d, r9d
+    shr     r11d, 15
+    or      eax, r11d
+    and     eax, 0xFFFF
+    test    edx, edx
+    jz      .divadd
+    mov     r11d, esi
+    sub     eax, r11d
+    jmp     .divac
+.divadd:
+    mov     r11d, esi
+    add     eax, r11d
+.divac:
+    and     eax, 0xFFFF
+    mov     [r10+2], ax
+    mov     r11d, r9d
+    shl     r11d, 1
+    or      r11d, edx
+    and     r11d, 0xFFFF
+    mov     [r10+4], r11w
+    mov     ecx, eax
+    mov     r11d, esi
+    xor     ecx, r11d
+    shr     ecx, 15
+    and     ecx, 1
+    jnz     .divnc
+    or      byte [rel ke_sr], 0x01
+.divnc:
+    mov     word [r10+8], 15
+    or      byte [rel ke_sr], 0x80
+    jmp     .divng
+.mul:
+    mov     byte [rel ke_sr], 0
+    mov     word [r10+8], 0
+    movzx   r8d, word [r10+4]
+    shl     r8d, 16
+    sar     r8d, 16                     ; MQ sext
+    mov     r9d, eax
+    shl     r9d, 16
+    sar     r9d, 16                     ; data sext
+    imul    r8d, r9d
+    mov     eax, r8d
+    shr     eax, 16
+    mov     [r10+2], ax
+    mov     [r10+4], r8w
+    test    eax, 0x8000
+    jz      .mulsr
+    mov     byte [rel ke_sr], 0xC0
+.mulsr:
+    call    ke_set_sr
+    jmp     .done
+.nor:
+    mov     byte [rel ke_sr], 0
+    movzx   r8d, word [r10+2]
+    movzx   r9d, word [r10+4]
+    xor     ecx, ecx
+.norlp:
+    cmp     ecx, 31
+    jae     .norend
+    cmp     r8d, 0x4000
+    jne     .norck
+    test    r9d, r9d
+    jz      .norend
+.norck:
+    mov     eax, r8d
+    shl     eax, 1
+    and     eax, 0xFFFF
+    xor     eax, r8d
+    test    eax, 0x8000
+    jnz     .norend
+    mov     edx, r9d
+    shr     edx, 15
+    shl     r8d, 1
+    and     r8d, 0xFFFF
+    or      r8d, edx
+    shl     r9d, 1
+    and     r9d, 0xFFFF
+    inc     ecx
+    jmp     .norlp
+.norend:
+    mov     [r10+2], r8w
+    mov     [r10+4], r9w
+    mov     [r10+8], cx
+    test    r8d, 0x8000
+    jz      .norsr
+    mov     byte [rel ke_sr], 0xC0
+.norsr:
+    call    ke_set_sr
+    jmp     .done
+.lsh:
+    mov     byte [rel ke_sr], 0
+    mov     word [r10+8], 0
+    mov     ecx, eax
+    and     ecx, 0x3F
+    jz      .lshsign
+    movzx   ebx, word [r10+2]
+    shl     ebx, 16
+    movzx   eax, word [r10+4]
+    or      ebx, eax                    ; ebx = u32
+    mov     esi, ebx
+    shr     esi, 31                     ; esi = sign
+    mov     rdx, rbx
+    shl     rdx, 32
+    sar     rdx, 32                     ; rdx = t32 sext
+    cmp     ecx, 32
+    jae     .lshright
+    mov     r9d, ecx                    ; count
+    mov     eax, 32
+    sub     eax, ecx
+    mov     ecx, eax
+    mov     rax, rdx
+    sar     rax, cl                     ; bits shifted out (arith)
+    mov     ecx, r9d
+    mov     r11, 0
+    test    esi, esi
+    jz      .lshsh
+    mov     r11, 0
+    dec     r11
+    shl     r11, cl
+.lshsh:
+    or      rax, r11
+    mov     r11d, eax                   ; sout
+    mov     r8d, ebx
+    shl     r8d, cl                     ; new32
+    xor     r12d, r12d
+    test    r8d, 0x80000000
+    jz      .lshcmp
+    dec     r12d                        ; expected -1
+.lshcmp:
+    cmp     r11d, r12d
+    je      .lshc
+    or      byte [rel ke_sr], 0x80
+.lshc:
+    test    r11d, 1
+    jz      .lshst
+    or      byte [rel ke_sr], 0x01
+.lshst:
+    mov     eax, r8d
+    shr     eax, 16
+    mov     [r10+2], ax
+    mov     [r10+4], r8w
+    jmp     .lshsign
+.lshright:
+    mov     eax, 64
+    sub     eax, ecx
+    mov     r9d, eax                    ; k
+    mov     rax, rdx
+    mov     ecx, r9d
+    dec     ecx
+    sar     rax, cl
+    and     rax, 1
+    test    rax, rax
+    jz      .lshr0
+    or      byte [rel ke_sr], 0x01
+.lshr0:
+    cmp     r9d, 32
+    je      .lshr32
+    mov     r8d, ebx
+    mov     ecx, r9d
+    shr     r8d, cl
+    jmp     .lshst2
+.lshr32:
+    xor     r8d, r8d
+.lshst2:
+    mov     eax, r8d
+    shr     eax, 16
+    mov     [r10+2], ax
+    mov     [r10+4], r8w
+.lshsign:
+    movzx   eax, word [r10+2]
+    test    eax, 0x8000
+    jz      .lshsr
+    xor     byte [rel ke_sr], 0xC0
+.lshsr:
+    call    ke_set_sr
+    jmp     .done
+.ash:
+    mov     byte [rel ke_sr], 0
+    mov     word [r10+8], 0
+    mov     ecx, eax
+    and     ecx, 0x3F
+    jz      .ashsign
+    movzx   ebx, word [r10+2]
+    shl     ebx, 16
+    movzx   eax, word [r10+4]
+    or      ebx, eax
+    mov     esi, ebx
+    shr     esi, 31
+    mov     rdx, rbx
+    shl     rdx, 32
+    sar     rdx, 32
+    cmp     ecx, 32
+    jae     .ashright
+    mov     r9d, ecx
+    mov     eax, 31
+    sub     eax, ecx
+    mov     ecx, eax
+    mov     rax, rdx
+    sar     rax, cl
+    mov     ecx, r9d
+    mov     r11, 0
+    test    esi, esi
+    jz      .ashsh
+    mov     r11, 0
+    dec     r11
+    shl     r11, cl
+.ashsh:
+    or      rax, r11
+    mov     r11d, eax
+    mov     r8d, ebx
+    shl     r8d, cl
+    mov     eax, ebx
+    and     eax, 0x10000000
+    or      r8d, eax
+    xor     r12d, r12d
+    test    r8d, 0x80000000
+    jz      .ashcmp
+    dec     r12d
+.ashcmp:
+    cmp     r11d, r12d
+    je      .ashc
+    or      byte [rel ke_sr], 0x80
+.ashc:
+    test    r11d, 1
+    jz      .ashst
+    or      byte [rel ke_sr], 0x01
+.ashst:
+    mov     eax, r8d
+    shr     eax, 16
+    mov     [r10+2], ax
+    mov     [r10+4], r8w
+    jmp     .ashsign
+.ashright:
+    mov     eax, 63
+    sub     eax, ecx
+    mov     r9d, ecx                    ; save count
+    mov     ecx, eax
+    mov     rax, rdx
+    sar     rax, cl
+    and     rax, 1
+    test    rax, rax
+    jz      .ashr0
+    or      byte [rel ke_sr], 0x01
+.ashr0:
+    cmp     r9d, 32
+    je      .ash32
+    mov     eax, 64
+    sub     eax, r9d                    ; k
+    mov     ecx, eax
+    mov     rax, rdx
+    sar     rax, cl
+    mov     eax, r9d
+    sub     eax, 32
+    mov     ecx, eax
+    mov     r11, 0
+    test    esi, esi
+    jz      .ashr1
+    mov     r11, 0
+    dec     r11
+    shl     r11, cl
+.ashr1:
+    or      rax, r11
+    mov     r8d, eax
+    jmp     .ashst
+.ash32:
+    xor     r8d, r8d
+    test    esi, esi
+    jz      .ashst
+    dec     r8d
+.ashsign:
+    movzx   eax, word [r10+2]
+    test    eax, 0x8000
+    jz      .ashsr
+    xor     byte [rel ke_sr], 0xC0
+.ashsr:
+    call    ke_set_sr
+    jmp     .done
+.done:
+    pop     r13
+    pop     r12
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r8
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    ret
+
+ke_write_byte:                          ; edi=addr, al=val (SIMH WRITEB rules)
+    mov     ecx, edi
+    sub     ecx, 0xFEC0
+    shr     ecx, 1
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    push    r13
+    lea     r10, [rel ke_regs]
+    mov     edx, edi
+    and     edx, 1
+    jnz     .odd
+    cmp     ecx, 4
+    je      .bdone                        ; SC byte writes ignored
+    cmp     ecx, 5
+    je      .go                           ; NOR: data unused
+    movzx   eax, al
+    cmp     ecx, 0
+    je      .seb
+    cmp     ecx, 1
+    je      .seb
+    cmp     ecx, 2
+    je      .seb
+    cmp     ecx, 3
+    jne     .go
+.seb:
+    test    al, 0x80
+    jz      .go
+    or      eax, 0xFF00
+.go:
+    jmp     ke_op_dispatch
+.odd:
+    cmp     ecx, 1
+    je      .ac_hi
+    cmp     ecx, 2
+    je      .mq_hi
+    jmp     .bdone
+.ac_hi:
+    movzx   edx, al
+    shl     edx, 8
+    movzx   ecx, word [r10+2]
+    and     ecx, 0xFF
+    or      ecx, edx
+    mov     [r10+2], cx
+    jmp     .bdone
+.mq_hi:
+    movzx   edx, al
+    shl     edx, 8
+    movzx   ecx, word [r10+4]
+    and     ecx, 0xFF
+    or      ecx, edx
+    mov     [r10+4], cx
+    mov     edx, ecx
+    shl     edx, 16
+    sar     edx, 31                     ; high-byte MQ write also sign-extends to AC
+    mov     [r10+2], dx
+.bdone:
+    pop     r13
+    pop     r12
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r8
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    ret
+
+; ---- DL11 console (TKS 0xFF70, TKB 0xFF72, TPS 0xFF74, TPB 0xFF76) ----
+con_read:
+    cmp     edi, 0xFF70
+    je      .tks
+    cmp     edi, 0xFF72
+    je      .tkb
+    cmp     edi, 0xFF74
+    je      .tps
+    movzx   eax, byte [rel tpb]       ; TPB read: last byte
+    ret
+.tks:
+    movzx   eax, byte [rel tks]
+    and     eax, 0xC0                 ; DONE|IE only
+    ret
+.tkb:
+    movzx   eax, byte [rel tkb]
+    push    rcx
+    push    rdx
+    and     byte [rel tks], 0x40      ; clear DONE, keep IE
+    mov     byte [rel irq_tti], 0
+    movzx   ecx, byte [rel tkb_n]
+    test    ecx, ecx
+    jz      .tkbdone
+    lea     rdx, [rel tkb_fifo]
+    movzx   ecx, byte [rel tkb_rd]
+    mov     cl, [rdx+rcx]
+    mov     [rel tkb], cl
+    movzx   ecx, byte [rel tkb_rd]
+    inc     cl
+    and     ecx, 63
+    mov     [rel tkb_rd], cl
+    dec     byte [rel tkb_n]
+    or      byte [rel tks], 0x80      ; DONE=1 (more pending)
+    mov     cl, [rel tks]
+    test    cl, 0x40
+    jz      .tkbdone
+    mov     byte [rel irq_tti], 1
+.tkbdone:
+    pop     rdx
+    pop     rcx
+    ret
+.tps:
+    movzx   eax, byte [rel tps]
+    and     eax, 0xC0
+    ret
+
+con_write:
+    cmp     edi, 0xFF70
+    je      .tks
+    cmp     edi, 0xFF72
+    je      .done                     ; TKB read-only
+    cmp     edi, 0xFF74
+    je      .tps
+    mov     [rel tpb], al             ; TPB: output byte
+    or      byte [rel tps], 0x80      ; DONE=1 (instant)
+    call    tt_console_byte
+    cmp     byte [rel tt_mute], 0
+    jne     .output_done
+    push    rax
+    push    rdi
+    push    rsi
+    push    rdx
+    mov     rax, 1
+    mov     rdi, 1
+    lea     rsi, [rel tpb]
+    mov     rdx, 1
+    syscall
+    pop     rdx
+    pop     rsi
+    pop     rdi
+    pop     rax
+.output_done:
+    mov     al, [rel tps]
+    test    al, 0x40
+    jz      .done
+    mov     byte [rel irq_tto], 1
+.done:
+    ret
+.tks:
+    mov     ecx, eax
+    shr     ecx, 6
+    and     ecx, 1                    ; new IE
+    test    cl, cl
+    jnz     .ie1
+    and     byte [rel tks], 0x80      ; IE 1->0 (keep DONE)
+    mov     byte [rel irq_tti], 0
+    ret
+.ie1:
+    mov     al, [rel tks]
+    and     al, 0x80
+    or      al, 0x40
+    mov     [rel tks], al
+    test    al, 0x80
+    jz      .done
+    mov     byte [rel irq_tti], 1
+    ret
+.tps:
+    mov     ecx, eax
+    shr     ecx, 6
+    and     ecx, 1
+    test    cl, cl
+    jnz     .tps1
+    and     byte [rel tps], 0x80
+    mov     byte [rel irq_tto], 0
+    ret
+.tps1:
+    mov     al, [rel tps]
+    and     al, 0x80
+    or      al, 0x40
+    mov     [rel tps], al
+    test    al, 0x80
+    jz      .done
+    mov     byte [rel irq_tto], 1
+    ret
+
+; ---- device stubs (replaced by real handlers incrementally) ----
+rf_read:                              ; edi=addr -> ax
+    cmp     edi, 0xFF30
+    jne     .n0
+    movzx   eax, word [rel rf_dcs]
+    and     eax, 0xFFFE                ; GO reads as 0
+    ret
+.n0:
+    cmp     edi, 0xFF32
+    jne     .n1
+    movzx   eax, word [rel rf_wc]
+    ret
+.n1:
+    cmp     edi, 0xFF34
+    jne     .n2
+    movzx   eax, word [rel rf_cma]
+    ret
+.n2:
+    cmp     edi, 0xFF36
+    jne     .n3
+    movzx   eax, word [rel rf_dar]
+    ret
+.n3:
+    cmp     edi, 0xFF38
+    jne     .n4
+    movzx   eax, word [rel rf_dae]
+    ret
+.n4:
+    cmp     edi, 0xFF3A
+    jne     .n5
+    movzx   eax, word [rel rf_db]
+    ret
+.n5:
+    cmp     edi, 0xFF3C
+    jne     .n6
+    movzx   eax, word [rel rf_mr]
+    ret
+.n6:
+    xor     eax, eax                  ; ADS: rotational pos (stub 0)
+    ret
+
+rf_write:                             ; edi=addr, ax=value
+    cmp     edi, 0xFF30
+    jne     .n0
+    test    ax, 0x0100                ; CLR?
+    jz      .noclr
+    mov     word [rel rf_dcs], 0x80   ; reset: DONE=1
+    mov     word [rel rf_wc], 0
+    mov     word [rel rf_cma], 0
+    mov     word [rel rf_dar], 0
+    mov     word [rel rf_dae], 0
+    mov     word [rel rf_db], 0
+    mov     word [rel rf_mr], 0
+    mov     byte [rel irq_rf], 0
+    ret
+.noclr:
+    mov     ecx, eax
+    shr     ecx, 6
+    and     ecx, 1                    ; new IE
+    jnz     .ie1
+    mov     byte [rel irq_rf], 0
+    jmp     .ie0
+.ie1:
+    mov     cl, [rel rf_dcs]
+    test    cl, 0x80
+    jz      .ie0
+    mov     byte [rel irq_rf], 1
+.ie0:
+    mov     edx, eax
+    and     edx, 0x007E               ; keep IE|MEX|FUNC (no GO)
+    mov     ecx, [rel rf_dcs]
+    and     ecx, 0xFF80               ; keep DONE|ERR
+    or      ecx, edx
+    mov     [rel rf_dcs], cx
+    test    ax, 1                     ; GO?
+    jnz     .go_on
+    jmp     .done
+.go_on:
+    mov     cl, [rel rf_dcs]
+    test    cl, 0x80                  ; DONE?
+    jnz     .idle_ok
+    jmp     .done                     ; busy: ignore
+.idle_ok:
+    mov     ecx, eax
+    shr     ecx, 1
+    and     ecx, 3                    ; FUNC
+    jnz     .func_ok
+    jmp     .done                     ; NOP
+.func_ok:
+    cmp     ecx, 3
+    jbe     .func_le3
+    jmp     .done                     ; (no func>3)
+.func_le3:
+    mov     edx, eax
+    shr     edx, 4
+    and     edx, 3                    ; MEX
+    jnz     .nxm                      ; MEX!=0: NXM on 11/20
+    mov     r8d, ecx                  ; func 1=W 2=R 3=CHK
+    call    rf_dma
+    jmp     .done
+.nxm:
+    or      word [rel rf_dcs], 0x8080 ; ERR|DONE... (DONE already set)
+    mov     byte [rel irq_rf], 1      ; +interrupt (IE assumed; harmless)
+.done:
+    ret
+.n0:
+    cmp     edi, 0xFF32
+    jne     .n1
+    mov     [rel rf_wc], ax
+    ret
+.n1:
+    cmp     edi, 0xFF34
+    jne     .n2
+    and     ax, 0xFFFE
+    mov     [rel rf_cma], ax
+    ret
+.n2:
+    cmp     edi, 0xFF36
+    jne     .n3
+    mov     [rel rf_dar], ax
+    ret
+.n3:
+    cmp     edi, 0xFF38
+    jne     .n4
+    mov     [rel rf_dae], ax
+    ret
+.n4:
+    cmp     edi, 0xFF3A
+    jne     .n5
+    mov     [rel rf_db], ax
+    ret
+.n5:
+    cmp     edi, 0xFF3C
+    jne     .n6
+    mov     [rel rf_mr], ax
+    ret
+.n6:
+    ret                               ; ADS read-only
+
+; rf_dma: r8d = func (1=W,2=R,3=CHK). synchronous. preserves rbx,r12-r15.
+rf_dma:
+    push    rbx
+    push    r12
+    push    r13
+    mov     rbx, r8                   ; func
+    movzx   ecx, word [rel rf_wc]
+    neg     ecx
+    and     ecx, 0xFFFF
+    jnz     .have_n
+    mov     ecx, 65536
+.have_n:
+    mov     r12d, ecx                 ; nwords
+    movzx   eax, word [rel rf_dae]
+    and     eax, 0x3F
+    shl     eax, 16
+    movzx   edx, word [rel rf_dar]
+    or      eax, edx
+    mov     r13d, eax                 ; da (22-bit)
+    movzx   eax, word [rel rf_cma]
+    and     eax, 0xFFFE
+    mov     r8d, eax                  ; ma
+    movzx   eax, word [rel rf_dae]
+    test    eax, 0x100                ; INH bit?
+    setne   al
+    movzx   r9d, al                   ; inh flag (r9d; r9b usable)
+.loop:
+    test    r12d, r12d
+    jnz     .ok_loop
+    jmp     .finish
+.ok_loop:
+    mov     eax, r13d
+    cmp     eax, [rel rf_nwords]
+    jb      .ok_ned
+    jmp     .ned
+.ok_ned:
+    mov     rax, r13
+    shl     rax, 1                    ; byte offset
+    cmp     ebx, 2                    ; READ?
+    je      .doread
+    cmp     ebx, 1
+    jne     .ok_dowr
+    jmp     .dowrite
+.ok_dowr:
+    jmp     .dochk
+.doread:
+    mov     rax, r13
+    shl     rax, 1                    ; byte offset = da*2
+    mov     r10, rax
+    cmp     byte [rel tt_enabled], 0
+    je      .host_read
+    xor     edi, edi
+    call    tt_disk_read
+    jmp     .read_ready
+.host_read:
+    mov     word [rel io_word], 0
+    mov     rax, 17                   ; sys_pread
+    mov     edi, [rel rf_fd]
+    lea     rsi, [rel io_word]
+    mov     rdx, 2
+    syscall
+.read_ready:
+    mov     edi, r8d
+    mov     ax, [rel io_word]
+    call    wr16
+    mov     [rel rf_db], ax
+    jmp     .adv
+.dowrite:
+    mov     edi, r8d
+    call    rd16
+    mov     [rel io_word], ax
+    mov     [rel rf_db], ax
+    mov     rax, r13
+    shl     rax, 1
+    mov     r10, rax
+    cmp     byte [rel tt_enabled], 0
+    je      .host_write
+    xor     edi, edi
+    call    tt_disk_write
+    jmp     .adv
+.host_write:
+    mov     rax, 18                   ; sys_pwrite
+    mov     edi, [rel rf_fd]
+    lea     rsi, [rel io_word]
+    mov     rdx, 2
+    syscall
+    jmp     .adv
+.dochk:
+    mov     rax, r13
+    shl     rax, 1
+    mov     r10, rax
+    cmp     byte [rel tt_enabled], 0
+    je      .host_check
+    xor     edi, edi
+    call    tt_disk_read
+    jmp     .check_ready
+.host_check:
+    mov     word [rel io_word], 0
+    mov     rax, 17
+    mov     edi, [rel rf_fd]
+    lea     rsi, [rel io_word]
+    mov     rdx, 2
+    syscall
+.check_ready:
+    mov     edi, r8d
+    call    rd16
+    cmp     ax, [rel io_word]
+    jne     .wchk
+    mov     [rel rf_db], ax
+    jmp     .adv
+.wchk:
+    or      word [rel rf_dcs], 0x8000  ; WCHK error -> ERR
+    jmp     .errout
+.ned:
+    or      word [rel rf_dcs], 0x8000  ; NED -> ERR
+.errout:
+    mov     word [rel rf_wc], 0
+    jmp     .finish2
+.adv:
+    test    r9d, r9d                  ; INH? keep ma
+    jnz     .noincr
+    add     r8d, 2
+    and     r8d, 0xFFFF
+.noincr:
+    add     r13d, 1
+    and     r13d, 0x3FFFFF
+    sub     r12d, 1
+    jmp     .loop
+.finish:
+    mov     word [rel rf_wc], 0
+.finish2:
+    mov     [rel rf_cma], r8w
+    mov     eax, r13d
+    mov     [rel rf_dar], ax
+    shr     eax, 16
+    and     eax, 0x3F
+    mov     ecx, [rel rf_dae]
+    and     ecx, 0xFFC0
+    or      ecx, eax
+    mov     [rel rf_dae], cx
+    or      word [rel rf_dcs], 0x80   ; DONE=1
+    mov     ax, [rel rf_dcs]
+    test    ax, 0x40
+    jz      .noint
+    mov     byte [rel irq_rf], 1
+.noint:
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; ---- DC11 mux (base 0xF800, 8 bytes/line) ----
+dc_read:
+    mov     ecx, edi
+    sub     ecx, 0xF800
+    shr     ecx, 3
+    cmp     ecx, 8
+    jb      .ok_range
+    jmp     .unmapped
+.ok_range:
+    mov     eax, edi
+    and     eax, 7
+    cmp     eax, 0
+    je      .rcsr
+    cmp     eax, 2
+    je      .rbuf
+    cmp     eax, 4
+    jne     .ok_xcsr
+    jmp     .xcsr
+.ok_xcsr:
+    lea     rdx, [rel dc_xbuf]
+    movzx   eax, byte [rdx+rcx]
+    ret
+.rcsr:
+    push    rcx
+    lea     rdx, [rel dc_rcsr]
+    movzx   eax, byte [rdx+rcx]
+    and     eax, 0x41
+    or      eax, 0x04
+    mov     [rdx+rcx], al
+    pop     rcx
+    ret
+.rbuf:
+    push    rcx
+    lea     rdx, [rel dc_rbuf]
+    movzx   eax, byte [rdx+rcx]
+    pop     rcx
+    ret
+.xcsr:
+    push    rcx
+    lea     rdx, [rel dc_xcsr]
+    movzx   eax, byte [rdx+rcx]
+    and     eax, 0x43
+    or      eax, 0x82
+    mov     [rdx+rcx], al
+    pop     rcx
+    ret
+.unmapped:
+    xor     eax, eax
+    ret
+
+dc_write:
+    mov     ecx, edi
+    sub     ecx, 0xF800
+    shr     ecx, 3
+    cmp     ecx, 8
+    jb      .inrange
+    jmp     .done
+.inrange:
+    mov     edx, edi
+    and     edx, 7
+    cmp     edx, 0
+    jne     .ok_norcsr
+    jmp     .rcsr
+.ok_norcsr:
+    cmp     edx, 2
+    je      .done                     ; RBUF read-only
+    cmp     edx, 4
+    jne     .ok_noxcsr
+    jmp     .xcsr
+.ok_noxcsr:
+    lea     rdx, [rel dc_xbuf]
+    mov     [rdx+rcx], al             ; XBUF: store byte, TX instant
+    lea     rdx, [rel dc_xcsr]
+    mov     r8b, [rdx+rcx]
+    test    r8b, 0x40
+    jnz     .havetx
+    jmp     .done
+.havetx:
+    lea     rdx, [rel irq_dc_tx]
+    mov     byte [rdx+rcx], 1
+.done:
+    ret
+.rcsr:
+    mov     r8b, al
+    and     r8b, 0x41                 ; IE|DTR
+    lea     rdx, [rel dc_rcsr]
+    mov     [rdx+rcx], r8b
+    ret
+.xcsr:
+    mov     r8b, al
+    and     r8b, 0x45                 ; IE|RTS|MNT
+    or      r8b, 0x80
+    lea     rdx, [rel dc_xcsr]
+    mov     [rdx+rcx], r8b
+    ret
+
+; ---- RK11 (base 0xFF00) ----
+rk_read:
+    cmp     edi, 0xFF00
+    jne     .n0
+    mov     eax, 0x9C0               ; RK05|SC_OK|RDY|RWS
+    ret
+.n0:
+    cmp     edi, 0xFF02
+    jne     .n1
+    movzx   eax, word [rel rker]
+    ret
+.n1:
+    cmp     edi, 0xFF04
+    jne     .n2
+    movzx   eax, word [rel rkcs]
+    ret
+.n2:
+    cmp     edi, 0xFF06
+    jne     .n3
+    movzx   eax, word [rel rkwc]
+    ret
+.n3:
+    cmp     edi, 0xFF08
+    jne     .n4
+    movzx   eax, word [rel rkba]
+    ret
+.n4:
+    cmp     edi, 0xFF0A
+    jne     .unmapped
+    movzx   eax, word [rel rkda]
+    ret
+.unmapped:
+    xor     eax, eax
+    ret
+
+rk_write:
+    cmp     edi, 0xFF00
+    jne     .w1
+    ret                               ; RKDS read-only
+.w1:
+    cmp     edi, 0xFF02
+    jne     .w2
+    ret                               ; RKER cleared by CTLRESET only
+.w2:
+    cmp     edi, 0xFF04
+    jne     .w3
+    jmp     rk_cs_write
+.w3:
+    cmp     edi, 0xFF06
+    jne     .w4
+    mov     [rel rkwc], ax
+    ret
+.w4:
+    cmp     edi, 0xFF08
+    jne     .w5
+    and     ax, 0xFFFE
+    mov     [rel rkba], ax
+    ret
+.w5:
+    cmp     edi, 0xFF0A
+    jne     .w6
+    mov     [rel rkda], ax
+    ret
+.w6:
+    ret                               ; RKMR/RKDB unimplemented
+
+rk_cs_write:                          ; ax = new RKCS (GO set)
+    push    rbx
+    push    r12
+    mov     ebx, eax                  ; keep full word
+    test    ax, 0x40                  ; IE?
+    jnz     .ie1
+    mov     byte [rel irq_rk], 0
+    jmp     .ie0
+.ie1:
+    mov     cx, [rel rkcs]
+    test    cx, 0x0080                ; DONE already?
+    jz      .ie0
+    mov     byte [rel irq_rk], 1
+.ie0:
+    mov     ecx, ebx
+    and     ecx, 0x0076               ; IE|MEX|FUNC (no GO)
+    mov     edx, [rel rkcs]
+    and     edx, 0xFF88               ; keep DONE|ERR|SCP
+    or      edx, ecx
+    mov     [rel rkcs], dx
+    test    bl, 1                     ; GO?
+    jnz     .goon
+    jmp     .done
+.goon:
+    mov     ecx, ebx
+    shr     ecx, 1
+    and     ecx, 7                    ; FUNC
+    cmp     ecx, 0
+    jne     .f1
+    mov     word [rel rker], 0        ; CTLRESET
+    mov     word [rel rkda], 0
+    mov     word [rel rkba], 0
+    or      word [rel rkcs], 0x0080
+    mov     ax, [rel rkcs]
+    test    ax, 0x0040
+    jnz     .theirq0
+    jmp     .done
+.theirq0:
+    mov     byte [rel irq_rk], 1
+    jmp     .done
+.f1:
+    cmp     ecx, 4
+    jne     .f2
+    or      word [rel rkcs], 0x2080   ; SEEK: SCP+DONE
+    mov     ax, [rel rkcs]
+    test    ax, 0x0040
+    jnz     .theirq1
+    jmp     .done
+.theirq1:
+    mov     byte [rel irq_rk], 1
+    jmp     .done
+.f2:
+    cmp     ecx, 6
+    jne     .f3
+    mov     byte [rel rklock], 0      ; DRVRESET
+    or      word [rel rkcs], 0x0080
+    mov     ax, [rel rkcs]
+    test    ax, 0x0040
+    jnz     .theirq2
+    jmp     .done
+.theirq2:
+    mov     byte [rel irq_rk], 1
+    jmp     .done
+.f3:
+    cmp     ecx, 7
+    jne     .f4
+    mov     byte [rel rklock], 1      ; WLK
+    or      word [rel rkcs], 0x0080
+    mov     ax, [rel rkcs]
+    test    ax, 0x0040
+    jnz     .theirq3
+    jmp     .done
+.theirq3:
+    mov     byte [rel irq_rk], 1
+    jmp     .done
+.f4:
+    cmp     ecx, 1
+    jne     .ok_f4a
+    jmp     .dow
+.ok_f4a:
+    cmp     ecx, 2
+    jne     .ok_f4b2
+    jmp     .dor
+.ok_f4b2:
+    cmp     ecx, 3
+    jne     .f4b
+    jmp     .done                     ; WCHK: NOP+DONE (unused)
+.f4b:
+    cmp     ecx, 5
+    jne     .ok_f4c
+    jmp     .dor                      ; RCHK as READ (harmless)
+.ok_f4c:
+    or      word [rel rkcs], 0x0080   ; unknown: NOP+DONE
+    jmp     .done
+.dow:
+    cmp     byte [rel rklock], 0
+    je      .doreal
+    or      word [rel rker], 0x2000   ; WLK lock set
+    or      word [rel rkcs], 0x8080   ; ERR|DONE
+    mov     ax, [rel rkcs]
+    test    ax, 0x0040
+    jnz     .theirq4
+    jmp     .done
+.theirq4:
+    mov     byte [rel irq_rk], 1
+    jmp     .done
+.doreal:
+    mov     r12d, 1                   ; func=WRITE
+    jmp     .dma_go
+.dor:
+    mov     r12d, 2                   ; func=READ
+.dma_go:
+    call    rk_dma
+.done:
+    pop     r12
+    pop     rbx
+    ret
+
+; rk_dma: r12d = 1 (WRITE) or 2 (READ). synchronous. preserves rbx,r12-r15.
+rk_dma:                               ; r12d=1 WRITE, 2 READ. preserves rbx,r11-r15
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r11
+    mov     ebx, r12d                 ; func
+    movzx   eax, word [rel rkda]
+    mov     ecx, eax
+    shr     ecx, 13
+    and     ecx, 7                    ; drive
+    jz      .ok_nxd
+    jmp     .nxd
+.ok_nxd:
+    mov     ecx, eax
+    shr     ecx, 5
+    and     ecx, 0xFF                 ; cyl
+    cmp     ecx, 202
+    jbe     .ok_nxc
+    jmp     .nxc
+.ok_nxc:
+    mov     r11d, ecx                 ; cyl (temp, r11 saved)
+    mov     ecx, eax
+    shr     ecx, 4
+    and     ecx, 1                    ; surf
+    mov     r13d, ecx
+    and     eax, 0xF                  ; sect
+    cmp     eax, 12
+    jb      .ok_nxs1
+    jmp     .nxs
+.ok_nxs1:
+    mov     ecx, r11d
+    shl     ecx, 1
+    add     ecx, r13d                 ; track = cyl*2+surf
+    mov     edx, ecx
+    shl     ecx, 3                    ; *8
+    shl     edx, 2                    ; *4
+    add     ecx, edx                  ; *12
+    add     ecx, eax                  ; block = track*12+sect
+    cmp     ecx, [rel rk_nblocks]
+    jb      .ok_nxs2
+    jmp     .nxs
+.ok_nxs2:
+    shl     ecx, 9                    ; byte_off = block*512
+    mov     [rel rkboff], ecx
+    mov     ecx, [rel rk_nblocks]
+    shl     ecx, 9
+    mov     r9d, ecx                  ; capac_bytes (survives syscalls)
+    movzx   ecx, word [rel rkwc]
+    neg     ecx
+    and     ecx, 0xFFFF
+    jnz     .havenc
+    mov     ecx, 65536
+.havenc:
+    mov     r13d, ecx                 ; nwords remaining
+    movzx   eax, word [rel rkba]
+    and     eax, 0xFFFE
+    mov     r12d, eax                 ; ma
+    movzx   eax, word [rel rkcs]
+    test    eax, 0x0400                ; FMT?
+    jz      .nofmt
+    or      word [rel rker], 0x0800   ; PGE
+    or      word [rel rkcs], 0x8080   ; ERR|DONE
+    mov     ax, [rel rkcs]
+    test    ax, 0x0040
+    jnz     .pge_irq
+    jmp     .done
+.pge_irq:
+    mov     byte [rel irq_rk], 1
+    jmp     .done
+.nofmt:
+    test    eax, 0x0800                ; INH -> keep ma fixed
+    setne   r8b
+    jmp     .loop
+.nxd:
+    or      word [rel rker], 0x10     ; NXD
+    jmp     .err
+.nxc:
+    or      word [rel rker], 0x08     ; NXC
+    jmp     .err
+.nxs:
+    or      word [rel rker], 0x20     ; NXS
+.err:
+    or      word [rel rkcs], 0x8080   ; ERR|DONE
+    mov     ax, [rel rkcs]
+    test    ax, 0x0040
+    jnz     .err_irq
+    jmp     .done
+.err_irq:
+    mov     byte [rel irq_rk], 1
+    jmp     .done
+.loop:
+    cmp     r13d, 0
+    jne     .ok_loop
+    jmp     .finish
+.ok_loop:
+    mov     eax, [rel rkboff]
+    add     eax, 2
+    cmp     eax, r9d
+    jbe     .ok_noovr
+    jmp     .ovr                      ; would pass end: OVR
+.ok_noovr:
+    cmp     ebx, 1
+    jne     .ok_nodow
+    jmp     .dow
+.ok_nodow:
+    cmp     byte [rel tt_enabled], 0
+    je      .host_read
+    mov     edi, 1
+    mov     r10d, [rel rkboff]
+    call    tt_disk_read
+    jmp     .read_ready
+.host_read:
+    mov     word [rel io_word], 0     ; READ
+    mov     rax, 17
+    mov     edi, [rel rk_fd]
+    lea     rsi, [rel io_word]
+    mov     rdx, 2
+    mov     r10d, [rel rkboff]
+    syscall
+.read_ready:
+    mov     edi, r12d
+    mov     ax, [rel io_word]
+    call    wr16
+    jmp     .adv
+.dow:
+    mov     edi, r12d                 ; WRITE
+    call    rd16
+    mov     [rel io_word], ax
+    cmp     byte [rel tt_enabled], 0
+    je      .host_write
+    mov     edi, 1
+    mov     r10d, [rel rkboff]
+    call    tt_disk_write
+    jmp     .adv
+.host_write:
+    mov     rax, 18
+    mov     edi, [rel rk_fd]
+    lea     rsi, [rel io_word]
+    mov     rdx, 2
+    mov     r10d, [rel rkboff]
+    syscall
+    jmp     .adv
+.ovr:
+    or      word [rel rker], 0x4000   ; OVR
+    jmp     .errout
+.adv:
+    test    r8b, r8b                  ; INH?
+    jnz     .noincr
+    add     r12d, 2
+    and     r12d, 0xFFFF
+.noincr:
+    mov     eax, [rel rkboff]
+    add     eax, 2
+    mov     [rel rkboff], eax
+    sub     r13d, 1
+    jmp     .loop
+.finish:
+    mov     word [rel rkwc], 0
+    mov     [rel rkba], r12w
+    mov     eax, [rel rkboff]
+    shr     eax, 9                    ; end_block
+    xor     edx, edx
+    mov     ecx, 12
+    div     ecx                       ; eax=track, edx=sect
+    mov     ecx, eax                  ; track
+    shr     ecx, 1                    ; new_cyl = track/2
+    and     eax, 1                    ; new_surf = track%2
+    shl     ecx, 5
+    or      ecx, eax
+    shl     ecx, 4
+    or      ecx, edx                  ; +sect (drive 0)
+    mov     [rel rkda], cx
+.errout:
+    mov     word [rel rkwc], 0
+    jmp     .upd_done
+.upd_done:
+    or      word [rel rkcs], 0x0080   ; DONE=1
+    mov     ax, [rel rker]
+    test    ax, ax
+    jz      .noint
+    or      word [rel rkcs], 0x8000   ; ERR if RKER!=0
+.noint:
+    mov     ax, [rel rkcs]
+    test    ax, 0x0040
+    jz      .done
+    mov     byte [rel irq_rk], 1
+.done:
+    pop     r11
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+ea_step:
+    mov     eax, 2
+    test    bl, bl
+    jz      .done
+    cmp     edx, 6
+    jae     .done
+    mov     eax, 1
+.done:
+    ret
+
+; ea_addr: cl=spec(mode<<3|reg), bl=byteflag -> r10d=ismem, r11=addr/index
+; clobbers rax,rcx,rdx,r8,r9,r10,r11. preserves rbx,r12-r15,rsi,rdi,rbp.
+ea_addr:
+    movzx   eax, cl
+    mov     edx, eax
+    and     edx, 7
+    shr     eax, 3
+    cmp     eax, 0
+    jne     .t1
+    xor     r10d, r10d
+    mov     r11d, edx
+    ret
+.t1:
+    cmp     eax, 1
+    jne     .t2
+    movzx   r11d, word [r15+rdx*2]
+    mov     r10d, 1
+    ret
+.t2:
+    cmp     eax, 2
+    jne     .t3
+    movzx   r11d, word [r15+rdx*2]
+    movzx   ecx, word [r15+rdx*2]
+    push    rcx
+    call    ea_step
+    mov     ecx, eax
+    pop     rax
+    add     eax, ecx
+    and     eax, 0xFFFF
+    mov     [r15+rdx*2], ax
+    mov     r10d, 1
+    ret
+.t3:
+    cmp     eax, 3
+    jne     .t4
+    movzx   r11d, word [r15+rdx*2]   ; save OLD Rn (dereference this)
+    movzx   ecx, word [r15+rdx*2]
+    push    rcx
+    call    ea_step
+    mov     ecx, eax
+    pop     rax
+    add     eax, ecx
+    and     eax, 0xFFFF
+    mov     [r15+rdx*2], ax          ; Rn += step
+    mov     edi, r11d                ; read OLD addr
+    call    rd16
+    movzx   r11d, ax                 ; r11 = mem[old Rn] (indirect)
+    mov     r10d, 1
+    ret
+.t4:
+    cmp     eax, 4
+    jne     .t5
+    push    rdx
+    call    ea_step
+    mov     ecx, eax
+    pop     rdx
+    movzx   eax, word [r15+rdx*2]
+    sub     eax, ecx
+    and     eax, 0xFFFF
+    mov     [r15+rdx*2], ax
+    mov     r11d, eax
+    mov     r10d, 1
+    ret
+.t5:
+    cmp     eax, 5
+    jne     .t6
+    push    rdx
+    call    ea_step
+    mov     ecx, eax
+    pop     rdx
+    movzx   eax, word [r15+rdx*2]
+    sub     eax, ecx
+    and     eax, 0xFFFF
+    mov     [r15+rdx*2], ax
+    mov     edi, eax
+    call    rd16
+    movzx   r11d, ax
+    mov     r10d, 1
+    ret
+.t6:
+    cmp     eax, 6
+    jne     .t7
+    movzx   edi, word [r15+14]
+    call    rd16
+    movzx   ecx, ax
+    movzx   eax, word [r15+14]
+    add     eax, 2
+    and     eax, 0xFFFF
+    mov     [r15+14], ax
+    movzx   eax, word [r15+rdx*2]
+    add     eax, ecx
+    and     eax, 0xFFFF
+    mov     r11d, eax
+    mov     r10d, 1
+    ret
+.t7:
+    movzx   edi, word [r15+14]
+    call    rd16
+    movzx   ecx, ax
+    movzx   eax, word [r15+14]
+    add     eax, 2
+    and     eax, 0xFFFF
+    mov     [r15+14], ax
+    movzx   eax, word [r15+rdx*2]
+    add     eax, ecx
+    and     eax, 0xFFFF
+    mov     edi, eax
+    call    rd16
+    movzx   r11d, ax
+    mov     r10d, 1
+    ret
+
+; psw helpers: psw_get -> ax word; psw_set: ax word -> bytes
+psw_get:
+    xor     eax, eax
+    mov     al, [rel psw_pri]
+    shl     eax, 5
+    movzx   ecx, byte [rel psw_n]
+    shl     ecx, 3
+    or      eax, ecx
+    movzx   ecx, byte [rel psw_z]
+    shl     ecx, 2
+    or      eax, ecx
+    movzx   ecx, byte [rel psw_v]
+    shl     ecx, 1
+    or      eax, ecx
+    movzx   ecx, byte [rel psw_c]
+    or      eax, ecx
+    ret
+psw_set:
+    mov     ecx, eax
+    and     ecx, 1
+    mov     [rel psw_c], cl
+    mov     ecx, eax
+    shr     ecx, 1
+    and     ecx, 1
+    mov     [rel psw_v], cl
+    mov     ecx, eax
+    shr     ecx, 2
+    and     ecx, 1
+    mov     [rel psw_z], cl
+    mov     ecx, eax
+    shr     ecx, 3
+    and     ecx, 1
+    mov     [rel psw_n], cl
+    mov     ecx, eax
+    shr     ecx, 5
+    and     ecx, 7
+    mov     [rel psw_pri], cl
+    ret
+
+push_w:
+    movzx   ecx, word [r15+12]
+    sub     ecx, 2
+    and     ecx, 0xFFFF
+    mov     [r15+12], cx
+    mov     edi, ecx
+    call    wr16
+    ret
+pop_w:
+    movzx   ecx, word [r15+12]
+    mov     edi, ecx
+    call    rd16
+    add     ecx, 2
+    and     ecx, 0xFFFF
+    mov     [r15+12], cx
+    ret
+
+trap_vec:
+    push    rdi                       ; push_w clobbers edi; save vector
+    call    psw_get
+    call    push_w
+    movzx   eax, word [r15+14]
+    call    push_w
+    pop     rdi                       ; restore vector
+    call    rd16
+    mov     [r15+14], ax
+    add     edi, 2
+    call    rd16
+    call    psw_set
+    ret
+
+; check_irq: returns eax=1 if an interrupt was dispatched (PC updated),
+; 0 otherwise. clobbers rax,rcx,rdx,rsi,rdi,r8-r11.
+check_irq:
+    mov     cl, [rel psw_pri]
+    cmp     cl, 6
+    jae     .no
+    cmp     byte [rel irq_clk], 0
+    je      .nclk
+    mov     byte [rel irq_clk], 0
+    mov     edi, 0x40                 ; CLK vector 100 oct
+    jmp     .fire
+.nclk:
+    cmp     cl, 5
+    jae     .no
+    cmp     byte [rel irq_rf], 0
+    je      .nrk
+    mov     byte [rel irq_rf], 0
+    mov     edi, 0x84                 ; RF vector 204 oct
+    jmp     .fire
+.nrk:
+    cmp     byte [rel irq_rk], 0
+    je      .ndc
+    mov     byte [rel irq_rk], 0
+    mov     edi, 0x90                 ; RK vector 220 oct
+    jmp     .fire
+.ndc:
+    cmp     cl, 4
+    jae     .no
+    lea     rdx, [rel irq_dc_rx]
+    xor     ecx, ecx
+.dcrx:
+    cmp     byte [rdx+rcx], 0
+    jne     .dcrxf
+    inc     ecx
+    cmp     ecx, 8
+    jb      .dcrx
+    lea     rdx, [rel irq_dc_tx]
+    xor     ecx, ecx
+.dctx:
+    cmp     byte [rdx+rcx], 0
+    jne     .dctxf
+    inc     ecx
+    cmp     ecx, 8
+    jb      .dctx
+    cmp     byte [rel irq_tti], 0
+    je      .ntto
+    mov     byte [rel irq_tti], 0
+    mov     edi, 0x30                 ; TTI vector 60 oct
+    jmp     .fire
+.ntto:
+    cmp     byte [rel irq_tto], 0
+    je      .no
+    mov     byte [rel irq_tto], 0
+    mov     edi, 0x34                 ; TTO vector 64 oct
+    jmp     .fire
+.dcrxf:
+    mov     byte [rdx+rcx], 0
+    mov     eax, 0xC0
+    lea     edi, [rax+rcx*8]
+    jmp     .fire
+.dctxf:
+    mov     byte [rdx+rcx], 0
+    mov     eax, 0xC4
+    lea     edi, [rax+rcx*8]
+    jmp     .fire
+.fire:
+    mov     byte [rel waitflag], 0
+    push    rdi
+    call    psw_get
+    call    push_w
+    movzx   eax, word [r15+14]
+    call    push_w
+    pop     rdi
+    call    rd16
+    mov     [r15+14], ax
+    add     edi, 2
+    call    rd16
+    call    psw_set
+    mov     eax, 1
+    ret
+.no:
+    xor     eax, eax
+    ret
+
+; poll_io: clock ticks (gettimeofday) + stdin poll. clobbers many.
+poll_io:
+    mov     rax, 96                   ; gettimeofday
+    lea     rdi, [rel tv_buf]
+    xor     rsi, rsi
+    syscall
+    mov     rax, [rel tv_buf]
+    mov     rcx, 1000000
+    mul     rcx
+    add     rax, [rel tv_buf+8]
+    mov     rcx, [rel last_tick]
+    test    rcx, rcx
+    jnz     .have
+    mov     [rel last_tick], rax
+    jmp     .tty
+.have:
+    mov     rdx, rax
+    sub     rdx, rcx
+    cmp     rdx, 16667
+    jb      .tty
+    cmp     rdx, 83335
+    ja      .resync
+    mov     r8d, 5
+.tick:
+    sub     rdx, 16667
+    add     qword [rel last_tick], 16667
+    or      byte [rel lks], 0x80      ; DONE=1
+    mov     al, [rel lks]
+    test    al, 0x40
+    jz      .notick
+    mov     byte [rel irq_clk], 1
+.notick:
+    dec     r8d
+    jz      .tty
+    cmp     rdx, 16667
+    jae     .tick
+    jmp     .tty
+.resync:
+    mov     [rel last_tick], rax
+    or      byte [rel lks], 0x80
+    mov     al, [rel lks]
+    test    al, 0x40
+    jz      .tty
+    mov     byte [rel irq_clk], 1
+.tty:
+    mov     rax, 0                        ; stdin is O_NONBLOCK: try read
+    mov     rdi, 0
+    lea     rsi, [rel in_byte]
+    mov     rdx, 1
+    syscall
+    cmp     rax, 1
+    je      .gotbyte
+    test    rax, rax
+    jz      .quit                         ; EOF: clean exit
+    ret                                   ; -EAGAIN: no data
+.quit:
+    xor     rdi, rdi
+    jmp     exit_clean
+.gotbyte:
+    mov     al, [rel in_byte]
+    jmp     host_input_byte
+
+host_input_byte:
+    cmp     al, 0x05                      ; Ctrl-E: exit
+    jne     .escape
+    jmp     .quit
+.quit:
+    mov     byte [rel tt_user_stop], 1
+    xor     rdi, rdi
+    jmp     exit_clean
+.escape:
+    mov     cl, [rel escape_prefix]
+    test    cl, cl
+    jnz     .pending
+    jmp     .new_prefix
+.pending:
+    mov     byte [rel escape_prefix], 0
+    cmp     al, cl                        ; doubled prefix sends one literal byte
+    jne     .not_double
+    jmp     con_input_byte
+.not_double:
+    cmp     cl, 0x01
+    jne     .control_x
+    cmp     al, 'x'                       ; Ctrl-A, then X (QEMU convention)
+    jne     .a_upper
+    jmp     .quit
+.a_upper:
+    cmp     al, 'X'
+    jne     .monitor_key
+    jmp     .quit
+.monitor_key:
+    cmp     byte [rel tt_enabled], 0
+    je      .forward_prefix
+    cmp     al, 'm'
+    je      .pause
+    cmp     al, 'M'
+    jne     .forward_prefix
+.pause:
+    mov     byte [rel tt_pause], 1
+    ret
+.control_x:
+    cmp     al, 'a'                       ; Ctrl-X, then A (alternate order)
+    jne     .x_upper
+    jmp     .quit
+.x_upper:
+    cmp     al, 'A'
+    jne     .forward_prefix
+    jmp     .quit
+.forward_prefix:
+    push    rax                           ; preserve the second byte
+    mov     al, cl
+    call    con_input_byte                ; unknown sequence: preserve guest input
+    pop     rax
+.new_prefix:
+    cmp     al, 0x01
+    je      .save_prefix
+    cmp     al, 0x18
+    je      .save_prefix
+    jmp     con_input_byte
+.save_prefix:
+    mov     [rel escape_prefix], al
+    ret
+
+; con_input_byte: queue one guest console byte. Host escape keys never enter
+; the guest TKB/FIFO. Clobbers rax,rcx,rdx; returns to the poll caller.
+con_input_byte:
+    cmp     byte [rel tt_host_only], 0
+    je      .guest_input
+    ret
+.guest_input:
+    and     al, 0x7F
+    call    tt_capture_input
+    mov     ah, [rel tks]
+    test    ah, 0x80
+    jz      .direct                   ; DONE=0: straight to TKB
+    movzx   ecx, byte [rel tkb_n]
+    cmp     ecx, 64
+    jae     .done                     ; fifo full: drop (real overrun)
+    movzx   ecx, byte [rel tkb_wr]
+    lea     edx, [rel tkb_fifo]
+    mov     [rdx+rcx], al
+    movzx   ecx, byte [rel tkb_wr]
+    inc     cl
+    and     ecx, 63
+    mov     [rel tkb_wr], cl
+    inc     byte [rel tkb_n]
+    jmp     .done
+.direct:
+    mov     [rel tkb], al
+    or      byte [rel tks], 0x80      ; DONE=1
+    test    ah, 0x40
+    jz      .done
+    mov     byte [rel irq_tti], 1
+.done:
+    ret
+
+; streq: rsi=str, rdi=NUL literal -> eax=1 equal else 0. clobbers rax,rdx,rcx.
+streq:
+    mov     al, [rsi]
+    mov     dl, [rdi]
+    cmp     al, dl
+    jne     .ne
+    test    al, al
+    jz      .eq
+    inc     rsi
+    inc     rdi
+    jmp     streq
+.eq:
+    mov     eax, 1
+    ret
+.ne:
+    xor     eax, eax
+    ret
+
+; open_disks: open rf/rk (explicit or defaults), fstat sizes. dies on error.
+open_disks:
+    push    r12
+    push    r13
+    mov     rax, [rel arg_rf]
+    test    rax, rax
+    jnz     .rf_given
+    lea     rax, [rel def_rf0]
+    mov     [rel arg_rf], rax
+.rf_given:
+    mov     rax, 2
+    mov     rdi, [rel arg_rf]
+    call    tt_disk_open_mode
+    xor     rdx, rdx
+    syscall
+    cmp     rax, 0
+    jl      .rf_try2
+    mov     [rel rf_fd], eax
+    jmp     .rf_size
+.rf_try2:
+    mov     rax, [rel arg_rf]
+    lea     rcx, [rel def_rf0]
+    cmp     rax, rcx
+    jne     fail_open
+    lea     rax, [rel def_rf1]
+    mov     [rel arg_rf], rax
+    mov     rax, 2
+    mov     rdi, [rel arg_rf]
+    call    tt_disk_open_mode
+    xor     rdx, rdx
+    syscall
+    cmp     rax, 0
+    jl      fail_open
+    mov     [rel rf_fd], eax
+.rf_size:
+    mov     rax, 5
+    mov     edi, [rel rf_fd]
+    lea     rsi, [rel statbuf]
+    syscall
+    mov     rax, [rel statbuf+48]
+    shr     rax, 1
+    mov     [rel rf_nwords], eax
+    mov     rax, [rel arg_rk]
+    test    rax, rax
+    jnz     .rk_given
+    lea     rax, [rel def_rk0]
+    mov     [rel arg_rk], rax
+.rk_given:
+    mov     rax, 2
+    mov     rdi, [rel arg_rk]
+    call    tt_disk_open_mode
+    xor     rdx, rdx
+    syscall
+    cmp     rax, 0
+    jl      .rk_try2
+    mov     [rel rk_fd], eax
+    jmp     .rk_size
+.rk_try2:
+    mov     rax, [rel arg_rk]
+    lea     rcx, [rel def_rk0]
+    cmp     rax, rcx
+    jne     fail_open
+    lea     rax, [rel def_rk1]
+    mov     [rel arg_rk], rax
+    mov     rax, 2
+    mov     rdi, [rel arg_rk]
+    call    tt_disk_open_mode
+    xor     rdx, rdx
+    syscall
+    cmp     rax, 0
+    jl      fail_open
+    mov     [rel rk_fd], eax
+.rk_size:
+    mov     rax, 5
+    mov     edi, [rel rk_fd]
+    lea     rsi, [rel statbuf]
+    syscall
+    mov     rax, [rel statbuf+48]
+    shr     rax, 9
+    mov     [rel rk_nblocks], eax
+    pop     r13
+    pop     r12
+    ret
+
+usage_err:
+    mov     rax, SYS_WRITE
+    mov     rdi, STDERR
+    lea     rsi, [rel usagemsg]
+    mov     rdx, usagemsg_len
+    syscall
+    mov     rdi, 2
+    jmp     exit_clean
+
+fail_open:
+    mov     rax, SYS_WRITE
+    mov     rdi, STDERR
+    lea     rsi, [rel openmsg]
+    mov     rdx, openmsg_len
+    syscall
+    mov     rdi, 1
+    jmp     exit_clean
+
+; set_nonblock: O_NONBLOCK on stdin (fd 0). best effort.
+set_nonblock:
+    mov     rax, 72                       ; sys_fcntl
+    mov     rdi, 0
+    mov     rsi, 3                        ; F_GETFL
+    xor     rdx, rdx
+    syscall
+    cmp     rax, 0
+    jl      .done
+    mov     [rel stdin_flags], eax
+    or      rax, 0x800                    ; O_NONBLOCK
+    mov     rdx, rax
+    mov     rax, 72
+    mov     rdi, 0
+    mov     rsi, 4                        ; F_SETFL
+    syscall
+    cmp     rax, 0
+    jl      .done
+    mov     byte [rel stdin_flags_saved], 1
+.done:
+    ret
+
+; exit_clean: preserve the requested status, restore termios and stdin flags.
+exit_clean:
+    push    rdi
+    cmp     byte [rel tt_ready], 0
+    je      .terminal
+    call    tt_finish
+    mov     [rsp], rax
+.terminal:
+    cmp     byte [rel raw_active], 0
+    je      .no
+    mov     rax, 16
+    mov     rdi, 0
+    mov     rsi, 0x5402
+    lea     rdx, [rel termios_saved]
+    syscall
+.no:
+    cmp     byte [rel stdin_flags_saved], 0
+    je      .exit
+    mov     rax, 72
+    xor     rdi, rdi
+    mov     rsi, 4                        ; F_SETFL
+    mov     edx, [rel stdin_flags]
+    syscall
+.exit:
+    pop     rdi
+    mov     rax, SYS_EXIT
+    syscall
+
+; termios_raw: raw mode on stdin if it's a tty. preserves r14/r15.
+termios_make_raw:
+    mov     rax, 16
+    mov     rdi, 0
+    mov     rsi, 0x5401              ; TCGETS
+    lea     rdx, [rel termios_saved]
+    syscall
+    cmp     rax, 0
+    jl      .skip
+    lea     rsi, [rel termios_saved]
+    lea     rdi, [rel termios_rawbuf]
+    mov     ecx, 8
+.cp:
+    mov     rax, [rsi]
+    mov     [rdi], rax
+    add     rsi, 8
+    add     rdi, 8
+    dec     ecx
+    jnz     .cp
+    lea     rdi, [rel termios_rawbuf]
+    mov     eax, [rdi+0]            ; c_iflag &= ~(IXON|IXANY), keep ICRNL (CR->NL)
+    and     eax, 0xFFFFF9FF
+    mov     [rdi+0], eax
+    mov     eax, [rdi+4]            ; c_oflag &= ~OPOST
+    and     eax, 0xFFFFFFFE
+    mov     [rdi+4], eax
+    mov     eax, [rdi+12]           ; c_lflag &= ~(ICANON|ECHO|ISIG)
+    and     eax, 0xFFFFFFF4
+    mov     [rdi+12], eax
+    mov     byte [rdi+22], 0        ; VTIME = 0
+    mov     byte [rdi+23], 1        ; VMIN = 1
+    mov     rax, 16
+    mov     rdi, 0
+    mov     rsi, 0x5403             ; TCSETSW (drain)
+    lea     rdx, [rel termios_rawbuf]
+    syscall
+    cmp     rax, 0
+    jl      .skip
+    mov     byte [rel raw_active], 1
+.skip:
+    ret
+
+; trace_one: edi=pc, esi=instr. preserves everything.
+trace_one:
+    push    rax
+    push    rcx
+    push    rdx
+    push    rsi
+    push    rdi
+    push    r8
+    lea     r8, [rel trbuf]
+    mov     eax, edi
+    shl     eax, 16
+    mov     ecx, 4
+.hexpc:
+    mov     edx, eax
+    shr     edx, 28
+    shl     eax, 4
+    cmp     edx, 10
+    jb      .hdig
+    add     edx, 0x37
+    jmp     .hput
+.hdig:
+    add     edx, 0x30
+.hput:
+    mov     [r8], dl
+    inc     r8
+    dec     ecx
+    jnz     .hexpc
+    mov     byte [r8], 0x20
+    inc     r8
+    mov     eax, esi
+    shl     eax, 16
+    mov     ecx, 4
+.hexir:
+    mov     edx, eax
+    shr     edx, 28
+    shl     eax, 4
+    cmp     edx, 10
+    jb      .hdig2
+    add     edx, 0x37
+    jmp     .hput2
+.hdig2:
+    add     edx, 0x30
+.hput2:
+    mov     [r8], dl
+    inc     r8
+    dec     ecx
+    jnz     .hexir
+    mov     byte [r8], 10
+    inc     r8
+    mov     rax, SYS_WRITE
+    mov     rdi, STDERR
+    lea     rsi, [rel trbuf]
+    mov     rdx, r8
+    sub     rdx, rsi
+    syscall
+    pop     r8
+    pop     rdi
+    pop     rsi
+    pop     rdx
+    pop     rcx
+    pop     rax
+    ret
+
+; ---- main loop ----
+main_loop:
+    cmp     byte [rel tt_enabled], 0
+    je      .ordinary
+    call    tt_cycle
+    test    eax, eax
+    jz      .fetch_pc
+    jmp     main_loop
+.ordinary:
+    dec     dword [rel poll_cnt]
+    jnz     .nopoll
+    mov     dword [rel poll_cnt], 1024
+    call    poll_io
+.nopoll:
+    cmp     byte [rel waitflag], 0
+    jne     .waitloop
+    call    check_irq
+    test    eax, eax
+    jnz     main_loop
+.fetch_pc:
+    movzx   ebx, word [r15+14]
+    movzx   eax, word [r14+rbx]
+    push    rax
+    cmp     byte [rel dotrace], 0
+    je      .notr
+    mov     edi, ebx
+    mov     esi, eax
+    call    trace_one
+.notr:
+    pop     rax
+.notick:
+    add     ebx, 2
+    and     ebx, 0xFFFF
+    mov     [r15+14], bx
+.fetch:
+    cmp     eax, 7
+    ja      .dispatch
+    cmp     eax, 0
+    jne     .c1
+    jmp     do_halt
+.c1:
+    cmp     eax, 1
+    jne     .c2
+    mov     byte [rel waitflag], 1    ; WAIT: halt until interrupt
+    jmp     main_loop
+.c2:
+    cmp     eax, 2
+    jne     .c3
+    jmp     do_rti
+.c3:
+    cmp     eax, 3
+    jne     .c4
+    mov     edi, 0x0C               ; BPT vector 14 oct
+    jmp     do_trap_vec
+.c4:
+    cmp     eax, 4
+    jne     .c5
+    mov     edi, 0x10               ; IOT vector 20 oct
+    jmp     do_trap_vec
+.c5:
+    cmp     eax, 5
+    jne     .c6
+    jmp     main_loop               ; RESET: nop
+.c6:
+    cmp     eax, 6
+    jne     .c7
+    jmp     do_rti                  ; RTT: same (no T-bit yet)
+.c7:
+    jmp     unimp
+.waitloop:
+    call    poll_io
+    call    check_irq
+    test    eax, eax
+    jnz     main_loop
+    sub     rsp, 16
+    mov     qword [rsp], 0
+    mov     qword [rsp+8], 1000000
+    mov     rax, 35
+    mov     rdi, rsp
+    xor     rsi, rsi
+    syscall
+    add     rsp, 16
+    jmp     .waitloop
+.dispatch:
+    mov     ecx, eax
+    and     ecx, 0xFFC0
+    cmp     ecx, 0x0040
+    jne     .d1
+    jmp     do_jmp
+.d1:
+    mov     ecx, eax
+    and     ecx, 0xFFF8
+    cmp     ecx, 0x0080
+    jne     .d2
+    jmp     do_rts
+.d2:
+    mov     ecx, eax
+    and     ecx, 0xFFE0
+    cmp     ecx, 0x0098
+    jne     .d2c
+    and     eax, 7                  ; SPL: pri = instr & 7
+    mov     [rel psw_pri], al
+    jmp     main_loop
+.d2c:
+    mov     ecx, eax
+    and     ecx, 0xFFE0
+    cmp     ecx, 0x00A0
+    jne     .d3
+    jmp     do_cc
+.d3:
+    mov     ecx, eax
+    and     ecx, 0xFFC0
+    cmp     ecx, 0x00C0
+    jne     .d3s
+    jmp     do_swab
+.d3s:
+    mov     ecx, eax
+    and     ecx, 0xFF00
+    cmp     ecx, 0x8800
+    jne     .d4
+    mov     edi, 0x18               ; EMT vector 30 oct
+    jmp     do_trap_vec
+.d4:
+    cmp     ecx, 0x8900
+    jne     .d5
+    mov     edi, 0x1C               ; TRAP vector 34 oct
+    jmp     do_trap_vec
+.d5:
+    cmp     eax, 0x0100
+    jb      .d6                     ; 0x000-0x0FF: misc or invalid
+    cmp     eax, 0x0800
+    jb      do_branch_low           ; 0x100-0x7FF: branches
+    cmp     eax, 0x0A00
+    jb      do_jsr                  ; 0x800-0x9FF: JSR
+    cmp     eax, 0x0E00
+    jb      do_single               ; 0xA00-0xDFF: singles
+    jmp     .d6                     ; 0xE00+: MTPS/MFPS/high/SOB/XOR/EAE/double
+.d6:
+    mov     ecx, eax
+    and     ecx, 0xFF00
+    cmp     ecx, 0x8C00
+    jne     .d7
+    jmp     do_mtps
+.d7:
+    cmp     ecx, 0x8D00
+    jne     .d8
+    jmp     do_mfps
+.d8:
+    mov     ecx, eax
+    and     ecx, 0xF000
+    cmp     ecx, 0x8000
+    jne     .d11
+    cmp     eax, 0x8800
+    jae     .d8b
+    jmp     do_branch_high
+.d8b:
+    cmp     eax, 0x8A00
+    jb      .d8c
+    cmp     eax, 0x8E00
+    jae     .d8c
+    jmp     do_single
+.d8c:
+    jmp     unimp
+.d11:
+    mov     ecx, eax
+    and     ecx, 0xFE00
+    cmp     ecx, 0x7E00             ; SOB 077000-077777
+    jne     .d12
+    jmp     do_sob
+.d12:
+    mov     ecx, eax
+    and     ecx, 0xF800
+    cmp     ecx, 0x7800
+    jne     .d13
+    jmp     do_xor
+.d13:
+    mov     ecx, eax
+    and     ecx, 0xF000
+    cmp     ecx, 0x7000
+    jne     .d14
+    jmp     do_eae
+.d14:
+    cmp     ecx, 0x1000
+    jb      .d15
+    cmp     ecx, 0x6000
+    jbe     .is_double
+    cmp     ecx, 0xE000
+    je      .is_double
+    cmp     ecx, 0x9000                 ; byte MOV..BIS (no ADDB/SUBB exist)
+    jb      .d15
+    cmp     ecx, 0xD000
+    jbe     .is_double
+    jmp     unimp
+.is_double:
+    jmp     do_double
+.d15:
+    jmp     unimp
+
+do_halt:
+    cmp     byte [rel test_mode], 0
+    jne     .test
+    mov     rax, SYS_WRITE             ; boot mode: guest halted
+    mov     rdi, STDERR
+    lea     rsi, [rel haltmsg]
+    mov     rdx, haltmsg_len
+    syscall
+    xor     rdi, rdi
+    jmp     exit_clean
+.test:
+    movzx   eax, word [r15+0]
+    cmp     eax, 0x2A                 ; R0 must be 42. decimal
+    jne     fail
+    xor     rdi, rdi
+    jmp     exit_clean
+
+do_rti:
+    call    pop_w
+    mov     [r15+14], ax
+    call    pop_w
+    call    psw_set
+    jmp     main_loop
+
+do_trap_vec:
+    call    trap_vec
+    jmp     main_loop
+
+do_jmp:
+    mov     ecx, eax
+    and     ecx, 0x3F
+    mov     edx, ecx
+    shr     ecx, 3
+    and     edx, 7
+    cmp     ecx, 0
+    jne     .ok
+    jmp     unimp
+.ok:
+    shl     ecx, 3
+    or      ecx, edx
+    mov     cl, cl
+    xor     bl, bl
+    call    ea_addr
+    test    r10d, r10d
+    jnz     .mem
+    jmp     unimp
+.mem:
+    mov     [r15+14], r11w
+    jmp     main_loop
+
+do_rts:
+    mov     ecx, eax
+    and     ecx, 7
+    mov     r8d, ecx                ; link reg
+    movzx   eax, word [r15+r8*2]
+    mov     [r15+14], ax            ; PC = R[reg]
+    movzx   ecx, word [r15+12]      ; SP
+    mov     edi, ecx
+    call    rd16                    ; ax = mem[SP]
+    mov     [r15+r8*2], ax          ; R[reg] = mem[SP]
+    add     ecx, 2
+    and     ecx, 0xFFFF
+    mov     [r15+12], cx
+    jmp     main_loop
+
+; do_cc: 000240-000277 (0xA0-0xBF): NOP + clear/set N/Z/V/C (SIMH order).
+do_cc:
+    cmp     eax, 0xB0
+    jae     .set
+    test    eax, 8                  ; 010: N=0
+    jz      .cc1
+    mov     byte [rel psw_n], 0
+.cc1:
+    test    eax, 4                  ; 004: Z=0
+    jz      .cc2
+    mov     byte [rel psw_z], 0
+.cc2:
+    test    eax, 2                  ; 002: V=0
+    jz      .cc3
+    mov     byte [rel psw_v], 0
+.cc3:
+    test    eax, 1                  ; 001: C=0
+    jz      .cc4
+    mov     byte [rel psw_c], 0
+.cc4:
+    jmp     main_loop
+.set:
+    test    eax, 8                  ; 010: N=1
+    jz      .cs1
+    mov     byte [rel psw_n], 1
+.cs1:
+    test    eax, 4                  ; 004: Z=1
+    jz      .cs2
+    mov     byte [rel psw_z], 1
+.cs2:
+    test    eax, 2                  ; 002: V=1
+    jz      .cs3
+    mov     byte [rel psw_v], 1
+.cs3:
+    test    eax, 1                  ; 001: C=1
+    jz      .cs4
+    mov     byte [rel psw_c], 1
+.cs4:
+    jmp     main_loop
+
+do_jsr:
+    push    rax                       ; save instr word
+    mov     eax, [rsp]
+    and     eax, 0x3F                 ; dst spec
+    mov     ecx, eax
+    xor     bl, bl
+    call    ea_addr                   ; evaluate EA first (SIMH order)
+    test    r10d, r10d
+    jz      .unimp                    ; JSR Rn (mode 0) illegal
+    mov     r12d, r11d                ; save ea
+    pop     rax                       ; instr word
+    mov     ecx, eax
+    shr     ecx, 6
+    and     ecx, 7
+    mov     r8d, ecx                  ; link reg
+    movzx   eax, word [r15+r8*2]
+    call    push_w                    ; push old R[reg]
+    movzx   eax, word [r15+14]
+    mov     [r15+r8*2], ax            ; R = PC (post-EA)
+    mov     eax, r12d
+    mov     [r15+14], ax              ; PC = ea
+    jmp     main_loop
+.unimp:
+    add     rsp, 8                    ; drop saved instr
+    jmp     unimp
+
+do_sob:
+    mov     ecx, eax
+    and     ecx, 0x3F                 ; off (6 bits)
+    mov     edx, eax
+    shr     edx, 6
+    and     edx, 7                    ; reg
+    movzx   eax, word [r15+rdx*2]
+    sub     eax, 1
+    and     eax, 0xFFFF
+    mov     [r15+rdx*2], ax
+    test    eax, eax
+    jz      .done                     ; zero: no branch, flags untouched
+    shl     ecx, 1
+    movzx   eax, word [r15+14]
+    sub     eax, ecx
+    and     eax, 0xFFFF
+    mov     [r15+14], ax
+.done:
+    jmp     main_loop
+
+; do_double: word/byte MOV CMP BIT BIC BIS ADD SUB.
+; op=(w>>12)&0xF: 1 2 3 4 5 6 E. byte = bit15.
+do_double:
+    push    rax                       ; save instr
+    mov     ecx, eax
+    shr     ecx, 12
+    and     ecx, 0xF                  ; op: 1-6 word, 9-13 byte, 14 SUB
+    xor     bl, bl
+    cmp     ecx, 9
+    jb      .ea_go
+    cmp     ecx, 13
+    ja      .ea_go
+    mov     bl, 1                     ; byte op
+.ea_go:
+    mov     ecx, eax
+    shr     ecx, 6
+    and     ecx, 0x3F                 ; src spec
+    call    ea_addr                   ; src -> r10/r11 (bl kept)
+    xor     r12d, r12d
+    test    r10d, r10d
+    jz      .src_r
+    mov     edi, r11d
+    test    bl, bl
+    jnz     .src_mb
+    call    rd16
+    mov     r12w, ax
+    jmp     .src_done
+.src_mb:
+    call    rd8
+    mov     r12b, al
+    jmp     .src_done
+.src_r:
+    mov     ecx, r11d
+    test    bl, bl
+    jnz     .src_rb
+    movzx   r12d, word [r15+rcx*2]
+    jmp     .src_done
+.src_rb:
+    movzx   r12d, byte [r15+rcx*2]
+.src_done:
+    mov     eax, [rsp]
+    and     eax, 0x3F                 ; dst spec
+    mov     ecx, eax
+    call    ea_addr                   ; dst -> r10/r11 (bl kept)
+    xor     r13d, r13d
+    test    r10d, r10d
+    jz      .dst_r
+    mov     edi, r11d
+    test    bl, bl
+    jnz     .dst_mb
+    call    rd16
+    mov     r13w, ax
+    jmp     .dst_done
+.dst_mb:
+    call    rd8
+    mov     r13b, al
+    jmp     .dst_done
+.dst_r:
+    mov     ecx, r11d
+    test    bl, bl
+    jnz     .dst_rb
+    movzx   r13d, word [r15+rcx*2]
+    jmp     .dst_done
+.dst_rb:
+    movzx   r13d, byte [r15+rcx*2]
+.dst_done:
+    mov     eax, [rsp]
+    shr     eax, 12
+    and     eax, 0xF                  ; op
+    test    bl, bl
+    jnz     .byteop
+    cmp     eax, 1                    ; MOV
+    jne     .w2
+    mov     ax, r12w
+    test    ax, ax
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    jmp     .store
+.w2:
+    cmp     eax, 2                    ; CMP
+    jne     .w3
+    mov     ax, r12w
+    sub     ax, r13w
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    seto    cl
+    mov     [rel psw_v], cl
+    setb    cl
+    mov     [rel psw_c], cl
+    add     rsp, 8
+    jmp     main_loop
+.w3:
+    cmp     eax, 3                    ; BIT
+    jne     .w4
+    mov     ax, r13w
+    and     ax, r12w
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    add     rsp, 8
+    jmp     main_loop
+.w4:
+    cmp     eax, 4                    ; BIC
+    jne     .w5
+    mov     ax, r12w
+    xor     ax, 0xFFFF
+    and     ax, r13w
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    jmp     .store
+.w5:
+    cmp     eax, 5                    ; BIS
+    jne     .w6
+    mov     ax, r13w
+    or      ax, r12w
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    jmp     .store
+.w6:
+    cmp     eax, 6                    ; ADD
+    jne     .w7
+    mov     ax, r13w
+    add     ax, r12w
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    seto    cl
+    mov     [rel psw_v], cl
+    setb    cl
+    mov     [rel psw_c], cl
+    jmp     .store
+.w7:
+    mov     ax, r13w                  ; SUB (op E)
+    sub     ax, r12w
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    seto    cl
+    mov     [rel psw_v], cl
+    setb    cl
+    mov     [rel psw_c], cl
+    jmp     .store
+.byteop:
+    sub     eax, 8                    ; byte ops are 9-13, map to 1-5
+    cmp     eax, 1                    ; MOVB
+    jne     .b2
+    mov     al, r12b
+    test    al, al
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    test    r10d, r10d
+    jz      .movb_r                   ; reg dst: sign-extend (SIMH)
+    jmp     .store                    ; mem dst: byte store
+.movb_r:
+    mov     ecx, r11d
+    mov     ah, 0
+    test    al, 0x80
+    jz      .movb_pos
+    mov     ah, 0xFF
+.movb_pos:
+    mov     [r15+rcx*2], ax
+    add     rsp, 8
+    jmp     main_loop
+.b2:
+    cmp     eax, 2                    ; CMPB
+    jne     .b3
+    mov     al, r12b
+    sub     al, r13b
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    seto    cl
+    mov     [rel psw_v], cl
+    setb    cl
+    mov     [rel psw_c], cl
+    add     rsp, 8
+    jmp     main_loop
+.b3:
+    cmp     eax, 3                    ; BITB
+    jne     .b4
+    mov     al, r13b
+    and     al, r12b
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    add     rsp, 8
+    jmp     main_loop
+.b4:
+    cmp     eax, 4                    ; BICB
+    jne     .b5
+    mov     al, r12b
+    xor     al, 0xFF
+    and     al, r13b
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    jmp     .store
+.b5:
+    cmp     eax, 5                    ; BISB
+    jne     .b6
+    mov     al, r13b
+    or      al, r12b
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    jmp     .store
+.b6:
+    cmp     eax, 6                    ; ADDB
+    jne     .b7
+    mov     al, r13b
+    add     al, r12b
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    seto    cl
+    mov     [rel psw_v], cl
+    setb    cl
+    mov     [rel psw_c], cl
+    jmp     .store
+.b7:
+    mov     al, r13b                  ; SUBB
+    sub     al, r12b
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    seto    cl
+    mov     [rel psw_v], cl
+    setb    cl
+    mov     [rel psw_c], cl
+    jmp     .store
+.store:
+    add     rsp, 8
+    test    r10d, r10d
+    jz      .store_r
+    mov     edi, r11d
+    test    bl, bl
+    jnz     .store_mb
+    call    wr16
+    jmp     main_loop
+.store_mb:
+    call    wr8
+    jmp     main_loop
+.store_r:
+    mov     ecx, r11d
+    test    bl, bl
+    jnz     .store_rb
+    mov     [r15+rcx*2], ax
+    jmp     main_loop
+.store_rb:
+    mov     [r15+rcx*2], al
+    jmp     main_loop
+; do_swab: SWAB (0003DD): swap bytes. N/Z from new low byte, C=0, V kept.
+do_swab:
+    push    rax                       ; save instr
+    mov     eax, [rsp]
+    and     eax, 0x3F
+    mov     ecx, eax                  ; dd spec
+    xor     bl, bl
+    call    ea_addr
+    test    r10d, r10d
+    jz      .r_r
+    mov     edi, r11d
+    call    rd16
+    mov     r13w, ax
+    jmp     .op
+.r_r:
+    mov     ecx, r11d
+    movzx   r13d, word [r15+rcx*2]
+.op:
+    mov     ax, r13w
+    mov     dl, al                    ; dl = old lo
+    shr     ax, 8                     ; ax = old hi
+    shl     dx, 8                     ; dx = old lo << 8
+    or      ax, dx
+    mov     dl, al
+    test    dl, dl
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_c], 0
+    add     rsp, 8
+    test    r10d, r10d
+    jz      .wr_r
+    mov     edi, r11d
+    call    wr16
+    jmp     main_loop
+.wr_r:
+    mov     ecx, r11d
+    mov     [r15+rcx*2], ax
+    jmp     main_loop
+
+; do_single: CLR/COM/INC/DEC/NEG/ADC/SBC/TST, ROR/ROL/ASR/ASL, SXT (+byte).
+do_single:
+    push    rax                       ; save instr ([rsp+8] after op push)
+    mov     ecx, eax
+    shr     ecx, 6
+    and     ecx, 0x3FF                 ; b
+    test    eax, 0x8000
+    setne   bl                        ; byteflag
+    cmp     ecx, 0x28
+    jb      .unimp1
+    cmp     ecx, 0x2F
+    jbe     .clr_w
+    cmp     ecx, 0x30
+    jb      .unimp1
+    cmp     ecx, 0x33
+    jbe     .rot_w
+    cmp     ecx, 0x37
+    jne     .chk_b
+    jmp     .sxt_w
+.chk_b:
+    cmp     ecx, 0x228
+    jb      .unimp1
+    cmp     ecx, 0x22F
+    jbe     .clr_b
+    cmp     ecx, 0x230
+    jb      .unimp1
+    cmp     ecx, 0x233
+    jbe     .rot_b
+    cmp     ecx, 0x237
+    jne     .unimp1
+    jmp     .sxt_b
+.unimp1:
+    jmp     unimp
+.clr_w:
+    sub     ecx, 0x28                 ; op 0..7
+    jmp     .ea_go
+.rot_w:
+    sub     ecx, 0x30                 ; 0..3 ROR ROL ASR ASL
+    add     ecx, 16
+    jmp     .ea_go
+.sxt_w:
+    mov     ecx, 24
+    jmp     .ea_go
+.clr_b:
+    sub     ecx, 0x228
+    jmp     .ea_go
+.rot_b:
+    sub     ecx, 0x230
+    add     ecx, 20                   ; 20..23 byte ROT
+    jmp     .ea_go
+.sxt_b:
+    mov     ecx, 25
+    jmp     .ea_go
+.ea_go:
+    push    rcx                       ; op class+idx
+    mov     eax, [rsp+8]
+    and     eax, 0x3F
+    mov     ecx, eax
+    call    ea_addr
+    xor     r13d, r13d
+    test    r10d, r10d
+    jz      .r_r
+    mov     edi, r11d
+    test    bl, bl
+    jnz     .r_mb
+    call    rd16
+    mov     r13w, ax
+    jmp     .op
+.r_mb:
+    call    rd8
+    mov     r13b, al
+    jmp     .op
+.r_r:
+    mov     ecx, r11d
+    test    bl, bl
+    jnz     .r_rb
+    movzx   r13d, word [r15+rcx*2]
+    jmp     .op
+.r_rb:
+    movzx   r13d, byte [r15+rcx*2]
+.op:
+    pop     rcx                       ; op
+    cmp     ecx, 7
+    ja      .op8
+    cmp     ecx, 0                    ; CLR
+    jne     .o1
+    xor     eax, eax
+    mov     byte [rel psw_n], 0
+    mov     byte [rel psw_z], 1
+    mov     byte [rel psw_v], 0
+    mov     byte [rel psw_c], 0
+    jmp     .wr
+.o1:
+    cmp     ecx, 1                    ; COM
+    jne     .o2
+    mov     ax, r13w
+    test    bl, bl
+    jnz     .o1b
+    xor     ax, 0xFFFF
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    mov     byte [rel psw_c], 1
+    jmp     .wr
+.o1b:
+    mov     al, r13b
+    xor     al, 0xFF
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    mov     byte [rel psw_c], 1
+    jmp     .wr
+.o2:
+    cmp     ecx, 2                    ; INC (add-based: inc lacks 66h prefix)
+    jne     .o3
+    test    bl, bl
+    jnz     .o2b
+    mov     dl, [rel psw_c]           ; INC preserves C
+    mov     ax, r13w
+    add     ax, 1
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    seto    cl
+    mov     [rel psw_v], cl
+    mov     [rel psw_c], dl
+    jmp     .wr
+.o2b:
+    mov     al, r13b
+    inc     al
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    cmp     al, 0x80
+    sete    cl
+    mov     [rel psw_v], cl
+    jmp     .wr
+.o3:
+    cmp     ecx, 3                    ; DEC (sub-based: dec lacks 66h prefix)
+    jne     .o4
+    test    bl, bl
+    jnz     .o3b
+    mov     dl, [rel psw_c]           ; DEC preserves C
+    mov     ax, r13w
+    sub     ax, 1
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    seto    cl
+    mov     [rel psw_v], cl
+    mov     [rel psw_c], dl
+    jmp     .wr
+.o3b:
+    mov     al, r13b
+    dec     al
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    cmp     al, 0x7F
+    sete    cl
+    mov     [rel psw_v], cl
+    jmp     .wr
+.o4:
+    cmp     ecx, 4                    ; NEG (xor+add: neg lacks 66h prefix)
+    jne     .o5
+    test    bl, bl
+    jnz     .o4b
+    mov     ax, r13w
+    xor     ax, 0xFFFF
+    add     ax, 1
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    seto    cl
+    mov     [rel psw_v], cl
+    test    ax, ax
+    sete    cl
+    xor     cl, 1
+    mov     [rel psw_c], cl
+    jmp     .wr
+.o4b:
+    mov     al, r13b
+    xor     al, 0xFF
+    add     al, 1
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    seto    cl
+    mov     [rel psw_v], cl
+    test    al, al
+    sete    cl
+    xor     cl, 1
+    mov     [rel psw_c], cl
+    jmp     .wr
+.o5:
+    cmp     ecx, 5                    ; ADC
+    jne     .o6
+    movzx   cx, byte [rel psw_c]      ; C_old
+    test    bl, bl
+    jnz     .o5b
+    mov     ax, r13w
+    add     ax, cx
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     cl, [rel psw_c]
+    test    cl, cl
+    jz      .o5v0
+    cmp     ax, 0x8000
+    sete    cl
+    mov     [rel psw_v], cl
+    mov     cl, [rel psw_z]
+    and     cl, [rel psw_c]
+    mov     [rel psw_c], cl
+    jmp     .wr
+.o5v0:
+    mov     byte [rel psw_v], 0
+    mov     byte [rel psw_c], 0
+    jmp     .wr
+.o5b:
+    mov     al, r13b
+    add     al, cl
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     cl, [rel psw_c]
+    test    cl, cl
+    jz      .o5v0b
+    cmp     al, 0x80
+    sete    cl
+    mov     [rel psw_v], cl
+    mov     cl, [rel psw_z]
+    and     cl, [rel psw_c]
+    mov     [rel psw_c], cl
+    jmp     .wr
+.o5v0b:
+    mov     byte [rel psw_v], 0
+    mov     byte [rel psw_c], 0
+    jmp     .wr
+.o6:
+    cmp     ecx, 6                    ; SBC
+    jne     .o7
+    movzx   cx, byte [rel psw_c]
+    test    bl, bl
+    jnz     .o6b
+    mov     ax, r13w
+    sub     ax, cx
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     cl, [rel psw_c]
+    test    cl, cl
+    jz      .o6v0
+    cmp     ax, 0x7FFF
+    sete    cl
+    mov     [rel psw_v], cl
+    cmp     ax, 0xFFFF
+    sete    cl
+    mov     [rel psw_c], cl
+    jmp     .wr
+.o6v0:
+    mov     byte [rel psw_v], 0
+    mov     byte [rel psw_c], 1
+    jmp     .wr
+.o6b:
+    mov     al, r13b
+    sub     al, cl
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     cl, [rel psw_c]
+    test    cl, cl
+    jz      .o6v0b
+    cmp     al, 0x7F
+    sete    cl
+    mov     [rel psw_v], cl
+    cmp     al, 0xFF
+    sete    cl
+    mov     [rel psw_c], cl
+    jmp     .wr
+.o6v0b:
+    mov     byte [rel psw_v], 0
+    mov     byte [rel psw_c], 1
+    jmp     .wr
+.o7:
+    test    bl, bl                    ; TST (op 7)
+    jnz     .o7b
+    mov     ax, r13w
+    test    ax, ax
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    mov     byte [rel psw_c], 0
+    add     rsp, 8
+    jmp     main_loop
+.o7b:
+    mov     al, r13b
+    test    al, al
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    mov     byte [rel psw_c], 0
+    add     rsp, 8
+    jmp     main_loop
+.op8:
+    cmp     ecx, 20
+    jb      .rot        ; 16..19 word ROT (8..15 unreachable)
+    cmp     ecx, 24
+    jb      .rotb       ; 20..23 byte ROT
+    cmp     ecx, 25
+    jne     .sxtb       ; 25 -> byte SXT; 24 falls to word SXT
+    mov     al, [rel psw_n]
+    test    al, al
+    jz      .sxt0
+    mov     ax, 0xFFFF
+    jmp     .sxtf
+.sxt0:
+    xor     eax, eax
+.sxtf:
+    sete    cl                        ; wait: Z = !N computed before? N in al
+    jmp     .sxtz
+.sxtb:
+    mov     al, [rel psw_n]           ; SXT byte
+    test    al, al
+    jz      .sxt0b
+    mov     al, 0xFF
+    jmp     .sxtfb
+.sxt0b:
+    xor     eax, eax
+.sxtfb:
+    sete    cl
+.sxtz:
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    jmp     .wr
+.rot:
+    sub     ecx, 16                   ; 0..3 ROR ROL ASR ASL word
+    mov     dl, [rel psw_c]           ; dl = C_old
+    mov     ax, r13w
+    cmp     ecx, 0
+    jne     .r1
+    mov     cx, ax                    ; ROR: C->b15, b0->C
+    and     cx, 1
+    shr     ax, 1
+    test    dl, dl
+    jz      .r1f
+    or      ax, 0x8000
+.r1f:
+    mov     [rel psw_c], cl
+    jmp     .rf
+.r1:
+    cmp     ecx, 1
+    jne     .r2
+    mov     cx, ax                    ; ROL: b15->C, C->b0
+    shr     cx, 15
+    shl     ax, 1
+    test    dl, dl
+    jz      .r2f
+    or      ax, 1
+.r2f:
+    mov     [rel psw_c], cl
+    jmp     .rf
+.r2:
+    cmp     ecx, 2
+    jne     .r3
+    mov     cx, ax                    ; ASR: b15 stays, b0->C
+    and     cx, 1
+    shr     ax, 1
+    test    ax, 0x4000
+    jz      .r3f
+    or      ax, 0x8000
+.r3f:
+    mov     [rel psw_c], cl
+    jmp     .rf
+.r3:
+    mov     cx, ax                    ; ASL: b15->C
+    shr     cx, 15
+    shl     ax, 1
+    mov     [rel psw_c], cl
+    jmp     .rf
+.rf:
+    test    ax, ax
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     cl, [rel psw_n]
+    xor     cl, [rel psw_c]
+    and     cl, 1
+    mov     [rel psw_v], cl
+    jmp     .wr
+.rotb:
+    sub     ecx, 20                   ; 0..3 byte ROT
+    mov     dl, [rel psw_c]           ; dl = C_old
+    mov     al, r13b
+    cmp     ecx, 0
+    jne     .rb1
+    mov     ch, al
+    and     ch, 1
+    shr     al, 1
+    test    dl, dl
+    jz      .rb1f
+    or      al, 0x80
+.rb1f:
+    mov     [rel psw_c], ch
+    jmp     .rbf
+.rb1:
+    cmp     ecx, 1
+    jne     .rb2
+    mov     ch, al
+    shr     ch, 7
+    shl     al, 1
+    test    dl, dl
+    jz      .rb2f
+    or      al, 1
+.rb2f:
+    mov     [rel psw_c], ch
+    jmp     .rbf
+.rb2:
+    cmp     ecx, 2
+    jne     .rb3
+    mov     ch, al
+    and     ch, 1
+    shr     al, 1
+    test    al, 0x40
+    jz      .rb3f
+    or      al, 0x80
+.rb3f:
+    mov     [rel psw_c], ch
+    jmp     .rbf
+.rb3:
+    mov     ch, al                    ; ASLB
+    shr     ch, 7
+    shl     al, 1
+    mov     [rel psw_c], ch
+    jmp     .rbf
+.rbf:
+    test    al, al
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     cl, [rel psw_n]
+    xor     cl, [rel psw_c]
+    and     cl, 1
+    mov     [rel psw_v], cl
+    jmp     .wr
+.unimp2:
+    jmp     unimp
+.wr:
+    add     rsp, 8
+    test    r10d, r10d
+    jz      .wr_r
+    mov     edi, r11d
+    test    bl, bl
+    jnz     .wr_mb
+    call    wr16
+    jmp     main_loop
+.wr_mb:
+    call    wr8
+    jmp     main_loop
+.wr_r:
+    mov     ecx, r11d
+    test    bl, bl
+    jnz     .wr_rb
+    mov     [r15+rcx*2], ax
+    jmp     main_loop
+.wr_rb:
+    mov     [r15+rcx*2], al
+    jmp     main_loop
+do_eae:
+    push    rax                       ; save instr
+    mov     eax, [rsp]
+    and     eax, 0x3F
+    mov     ecx, eax                  ; ss spec
+    xor     bl, bl
+    call    ea_addr
+    xor     r12d, r12d
+    test    r10d, r10d
+    jz      .src_r
+    mov     edi, r11d
+    call    rd16
+    mov     r12w, ax
+    jmp     .go
+.src_r:
+    mov     ecx, r11d
+    movzx   r12d, word [r15+rcx*2]
+.go:
+    mov     eax, [rsp]
+    shr     eax, 9
+    and     eax, 3                    ; op 0=MUL 1=DIV 2=ASH 3=ASHC
+    mov     edx, [rsp]
+    shr     edx, 6
+    and     edx, 7                    ; Rs
+    cmp     eax, 0
+    jne     .e1
+    movsx   eax, word [r15+rdx*2]     ; MUL (R,R+1) = R*src
+    movsx   ecx, r12w
+    imul    eax, ecx
+    test    eax, eax
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    mov     ecx, edx
+    inc     ecx
+    and     ecx, 7
+    mov     [r15+rdx*2], ax
+    shr     eax, 16
+    mov     [r15+rcx*2], ax
+    add     rsp, 8
+    jmp     main_loop
+.e1:
+    cmp     eax, 1
+    jne     .e2
+    movsx   ecx, r12w                 ; DIV (R,R+1)/src
+    test    ecx, ecx
+    jnz     .divnz
+    mov     byte [rel psw_v], 1       ; div by zero: V=1
+    add     rsp, 8
+    jmp     main_loop
+.divnz:
+    mov     r9d, edx                  ; Rs
+    mov     r10d, edx
+    inc     r10d
+    and     r10d, 7                   ; Rs+1
+    movzx   eax, word [r15+r9*2]
+    shl     eax, 16
+    movzx   r11d, word [r15+r10*2]
+    or      eax, r11d                 ; signed 32-bit dividend
+    cdqe
+    cqo
+    movsxd  r8, ecx                   ; divisor sign-extended to 64
+    idiv    r8                        ; quot rax, rem rdx
+    cmp     rax, -32768
+    jl      .divov
+    cmp     rax, 32767
+    jg      .divov
+    mov     [r15+r9*2], ax             ; quot -> Rs
+    mov     [r15+r10*2], dx           ; rem -> Rs+1
+    test    ax, ax
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    mov     byte [rel psw_c], 0
+    add     rsp, 8
+    jmp     main_loop
+.divov:
+    mov     byte [rel psw_v], 1       ; overflow: V=1, no store
+    add     rsp, 8
+    jmp     main_loop
+.e2:
+    cmp     eax, 2
+    jne     .e3
+    mov     ecx, r12d
+    and     ecx, 0x3F                 ; c: 0=none, 1..31 left, 32..63 right
+    jz      .e_done
+    movzx   eax, word [r15+rdx*2]     ; val (edx=Rs intact)
+    cmp     ecx, 32
+    jb      .ash_l
+    mov     r9d, ecx                  ; right: k = 64-c
+    neg     r9d
+    and     r9d, 63
+    cmp     r9d, 16
+    ja      .ash_rbig
+    mov     cl, r9b                   ; k 1..16 in cl
+    sar     ax, cl                    ; CF = last bit out
+    setb    cl
+    mov     [rel psw_c], cl
+    mov     byte [rel psw_v], 0
+    jmp     .ash_st
+.ash_rbig:
+    test    ax, ax                    ; k>16: sign extend, C=old b15
+    sets    cl
+    mov     [rel psw_c], cl
+    test    cl, cl
+    jz      .ash_rz
+    mov     ax, 0xFFFF
+    jmp     .ash_nz2
+.ash_rz:
+    xor     eax, eax
+    jmp     .ash_nz2
+.ash_l:
+    test    ax, ax                    ; oldN -> r9b
+    sets    r9b
+    cmp     ecx, 16
+    ja      .ash_lbig
+    shl     ax, cl                    ; k in cl (ecx<32, cl=k)
+    setb    cl
+    mov     [rel psw_c], cl
+    sets    cl
+    xor     cl, r9b
+    and     cl, 1
+    mov     [rel psw_v], cl
+.ash_nz2:
+    test    ax, ax
+.ash_nz:
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+.ash_st:
+    mov     [r15+rdx*2], ax
+    add     rsp, 8
+    jmp     main_loop
+.ash_lbig:
+    xor     eax, eax                  ; k>16 left: result 0
+    mov     byte [rel psw_n], 0
+    mov     byte [rel psw_z], 1
+    mov     byte [rel psw_c], 0
+    mov     [rel psw_v], r9b          ; V = oldN (sign changed)
+    jmp     .ash_st
+.e3:
+    mov     ecx, r12d
+    and     ecx, 0x3F                 ; ASHC on pair (R,R+1)
+    jz      .e_done
+    mov     r9d, edx
+    inc     r9d
+    and     r9d, 7                    ; Rs+1
+    movzx   eax, word [r15+rdx*2]
+    shl     eax, 16
+    movzx   r10d, word [r15+r9*2]
+    or      eax, r10d                 ; orig 32-bit
+    mov     r10d, eax                 ; save orig
+    cmp     ecx, 32
+    jb      .ashc_l
+    mov     r11d, ecx                 ; right: k = 64-c
+    neg     r11d
+    and     r11d, 63
+    cmp     r11d, 32
+    jne     .ashc_r
+    test    eax, eax                  ; k=32: sign extend, C=old b31
+    sets    cl
+    mov     [rel psw_c], cl
+    test    cl, cl
+    jz      .ashc_rz
+    mov     eax, 0xFFFFFFFF
+    jmp     .ashc_nz
+.ashc_rz:
+    xor     eax, eax
+    jmp     .ashc_nz
+.ashc_r:
+    mov     cl, r11b                  ; k 1..31 in cl
+    sar     eax, cl
+    setb    cl
+    mov     [rel psw_c], cl
+    mov     byte [rel psw_v], 0
+    jmp     .ashc_nz
+.ashc_l:
+    shl     eax, cl                   ; CF = bit(32-k)
+    setb    cl
+    mov     [rel psw_c], cl
+    jmp     .ashc_nz
+.ashc_nz:
+    test    eax, eax
+    sets    cl
+    mov     [rel psw_n], cl           ; N = bit31 (sets reads SF=bit31 ✓)
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     edx, r10d                 ; recompute V = old31^new31
+    shr     edx, 31
+    mov     ecx, eax
+    shr     ecx, 31
+    xor     ecx, edx
+    and     ecx, 1
+    mov     [rel psw_v], cl
+.ashc_st:
+    mov     edx, [rsp]                ; Rs
+    shr     edx, 6
+    and     edx, 7
+    mov     ecx, eax
+    shr     ecx, 16
+    mov     [r15+rdx*2], cx           ; hi -> Rs
+    mov     r9d, edx
+    inc     r9d
+    and     r9d, 7
+    mov     [r15+r9*2], ax            ; lo -> Rs+1
+    add     rsp, 8
+    jmp     main_loop
+.e_done:
+    add     rsp, 8
+    jmp     main_loop
+do_xor:
+    push    rax                       ; XOR R,ss
+    mov     eax, [rsp]
+    and     eax, 0x3F
+    mov     ecx, eax
+    xor     bl, bl
+    call    ea_addr
+    xor     r13d, r13d
+    test    r10d, r10d
+    jz      .xr
+    mov     edi, r11d
+    call    rd16
+    mov     r13w, ax
+    jmp     .xgo
+.xr:
+    mov     ecx, r11d
+    movzx   r13d, word [r15+rcx*2]
+.xgo:
+    mov     eax, [rsp]
+    shr     eax, 6
+    and     eax, 7
+    movzx   eax, word [r15+rax*2]
+    xor     r13w, ax
+    mov     ax, r13w
+    test    ax, ax
+    sets    cl
+    mov     [rel psw_n], cl
+    sete    cl
+    mov     [rel psw_z], cl
+    mov     byte [rel psw_v], 0
+    test    r10d, r10d
+    jz      .xwr
+    mov     edi, r11d
+    call    wr16
+    add     rsp, 8
+    jmp     main_loop
+.xwr:
+    mov     ecx, r11d
+    mov     [r15+rcx*2], ax
+    add     rsp, 8
+    jmp     main_loop
+do_mtps:
+    push    rax                       ; MTPS: byte -> PSW
+    mov     eax, [rsp]
+    and     eax, 0x3F
+    mov     ecx, eax
+    mov     bl, 1
+    call    ea_addr
+    xor     eax, eax
+    test    r10d, r10d
+    jz      .mt_r
+    mov     edi, r11d
+    call    rd8
+    jmp     .mt_go
+.mt_r:
+    mov     ecx, r11d
+    mov     al, [r15+rcx]
+.mt_go:
+    mov     cl, al
+    and     cl, 1
+    mov     [rel psw_c], cl
+    mov     cl, al
+    shr     cl, 1
+    and     cl, 1
+    mov     [rel psw_v], cl
+    mov     cl, al
+    shr     cl, 2
+    and     cl, 1
+    mov     [rel psw_z], cl
+    mov     cl, al
+    shr     cl, 3
+    and     cl, 1
+    mov     [rel psw_n], cl
+    mov     cl, al
+    shr     cl, 5
+    and     cl, 7
+    mov     [rel psw_pri], cl
+    add     rsp, 8
+    jmp     main_loop
+do_mfps:
+    push    rax                       ; MFPS: PSW -> word dst
+    mov     eax, [rsp]
+    and     eax, 0x3F
+    mov     ecx, eax
+    xor     bl, bl
+    call    ea_addr
+    call    psw_get
+    test    r10d, r10d
+    jz      .mf_r
+    mov     edi, r11d
+    call    wr16
+    add     rsp, 8
+    jmp     main_loop
+.mf_r:
+    mov     ecx, r11d
+    mov     [r15+rcx*2], ax
+    add     rsp, 8
+    jmp     main_loop
+
+; ---- branches ----
+do_branch_low:
+    mov     ecx, eax
+    shr     ecx, 8
+    and     ecx, 7
+    jmp     branch_common
+do_branch_high:
+    mov     ecx, eax
+    shr     ecx, 8
+    and     ecx, 7
+    add     ecx, 8
+    jmp     branch_common
+branch_common:
+    movsx   edx, al
+    shl     edx, 1
+    push    rdx
+    call    cond_true
+    pop     rdx
+    test    eax, eax
+    jz      .nt
+    movzx   eax, word [r15+14]
+    add     eax, edx
+    and     eax, 0xFFFF
+    mov     [r15+14], ax
+.nt:
+    jmp     main_loop
+
+cond_true:
+    mov     al, [rel psw_n]
+    mov     dl, [rel psw_z]
+    mov     dh, [rel psw_v]
+    mov     r9b, [rel psw_c]
+    cmp     ecx, 1
+    jne     .c2
+    mov     eax, 1                  ; BR: always
+    ret
+.c2:
+    cmp     ecx, 2
+    jne     .c3
+    test    dl, dl                  ; BNE: Z==0
+    sete    al
+    movzx   eax, al
+    ret
+.c3:
+    cmp     ecx, 3
+    jne     .c4
+    test    dl, dl                  ; BEQ: Z==1
+    setne   al
+    movzx   eax, al
+    ret
+.c4:
+    cmp     ecx, 4
+    jne     .c5
+    cmp     al, dh                  ; BGE: N==V
+    sete    al
+    movzx   eax, al
+    ret
+.c5:
+    cmp     ecx, 5
+    jne     .c6
+    cmp     al, dh                  ; BLT: N!=V
+    setne   al
+    movzx   eax, al
+    ret
+.c6:
+    cmp     ecx, 6
+    jne     .c7
+    cmp     al, dh                  ; BGT: (N==V)&&!Z
+    sete    al
+    test    dl, dl
+    sete    dl
+    and     al, dl
+    movzx   eax, al
+    ret
+.c7:
+    cmp     ecx, 7
+    jne     .c8
+    cmp     al, dh                  ; BLE: (N!=V)||Z
+    setne   al
+    or      al, dl
+    movzx   eax, al
+    ret
+.c8:
+    cmp     ecx, 8
+    jne     .c9
+    test    al, al                  ; BPL: !N
+    sete    al
+    movzx   eax, al
+    ret
+.c9:
+    cmp     ecx, 9
+    jne     .c10
+    movzx   eax, al                 ; BMI: N
+    ret
+.c10:
+    cmp     ecx, 10
+    jne     .c11
+    test    r9b, r9b                ; BHI: !C&&!Z
+    sete    al
+    test    dl, dl
+    sete    dl
+    and     al, dl
+    movzx   eax, al
+    ret
+.c11:
+    cmp     ecx, 11
+    jne     .c12
+    mov     al, r9b                 ; BLOS: C||Z
+    or      al, dl
+    movzx   eax, al
+    ret
+.c12:
+    cmp     ecx, 12
+    jne     .c13
+    test    dh, dh                  ; BVC: !V
+    sete    al
+    movzx   eax, al
+    ret
+.c13:
+    cmp     ecx, 13
+    jne     .c14
+    movzx   eax, dh                 ; BVS: V
+    ret
+.c14:
+    cmp     ecx, 14
+    jne     .c15
+    test    r9b, r9b                ; BCC: !C
+    sete    al
+    movzx   eax, al
+    ret
+.c15:
+    movzx   eax, r9b                ; BCS: C
+    ret
+
+fail:
+    mov     rax, SYS_WRITE
+    mov     rdi, STDERR
+    lea     rsi, [rel failmsg]
+    mov     rdx, failmsg_len
+    syscall
+    mov     rdi, 1
+    jmp     exit_clean
+
+unimp:
+    mov     rax, SYS_WRITE
+    mov     rdi, STDERR
+    lea     rsi, [rel unimpmsg]
+    mov     rdx, unimpmsg_len
+    syscall
+    mov     rdi, 1
+    jmp     exit_clean
+
+crash_odd:
+    mov     esi, edi                  ; esi = fault addr (debug)
+    movzx   edi, word [r15+14]        ; edi = guest PC
+    call    trace_one
+    mov     rax, SYS_WRITE
+    mov     rdi, STDERR
+    lea     rsi, [rel oddmsg]
+    mov     rdx, oddmsg_len
+    syscall
+    mov     rdi, 1
+    jmp     exit_clean
+
+crash_io:
+    mov     rax, SYS_WRITE
+    mov     rdi, STDERR
+    lea     rsi, [rel iomsg]
+    mov     rdx, iomsg_len
+    syscall
+    mov     rdi, 1
+    jmp     exit_clean
+
+section .rodata
+banner:     db "bemu-pdp11: PDP-11/20 emulator", 10
+            db "Host exit: Ctrl-E | Ctrl-A then X | Ctrl-X then A", 10
+banner_len  equ $-banner
+opt_trace:  db "trace", 0
+opt_test:   db "test", 0
+def_rf0:    db "images/rf0.dsk", 0
+def_rf1:    db "../images/rf0.dsk", 0
+def_rk0:    db "images/rk0.dsk", 0
+def_rk1:    db "../images/rk0.dsk", 0
+usagemsg:   db "usage: bemu-pdp11 [--trace] [--test FILE] [rf0.dsk [rk0.dsk]]", 10
+            db "       bemu-pdp11 --time-travel [--record NEW.btt] [rf0.dsk rk0.dsk]", 10
+            db "       bemu-pdp11 [--time-travel] --replay SESSION.btt", 10
+            db "Host monitor: Ctrl-A then M. Exit: Ctrl-E / Ctrl-A X / Ctrl-X A.", 10
+usagemsg_len equ $-usagemsg
+openmsg:    db "bemu-pdp11: cannot open disk image", 10
+openmsg_len equ $-openmsg
+haltmsg:    db "bemu-pdp11: HALT", 10
+haltmsg_len equ $-haltmsg
+failmsg:    db "bemu-pdp11: self-test FAILED", 10
+failmsg_len equ $-failmsg
+unimpmsg:   db "bemu-pdp11: unimplemented instruction", 10
+unimpmsg_len equ $-unimpmsg
+oddmsg:     db "bemu-pdp11: odd address trap", 10
+oddmsg_len  equ $-oddmsg
+iomsg:      db "bemu-pdp11: IO page access (no devices yet)", 10
+iomsg_len   equ $-iomsg
+; M792 boot ROM (RF path, SR=173700). Hand-assembled from boot/m792low.s,
+; verified word-for-word against the payload of boot/m792low.load:
+; 15c0 ff3a 15e0 0003 ... 04fe 005f 5800. Loaded at 73700 oct.
+m792rom:
+    dw 0x15C0, 0xFF3A, 0x15E0, 0x0003
+    dw 0x15E0, 0xC000, 0x15E0, 0x5800
+    dw 0x15E0, 0xFC00, 0x15E0, 0x0005
+    dw 0x8BC8, 0x04FE, 0x005F, 0x5800
+m792rom_end:
+
+%include "src/time_travel.basm"

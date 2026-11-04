@@ -1,0 +1,319 @@
+#!/usr/bin/expect -f
+# Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+# License: original unix-v1 terms; see ../../LICENSE.
+
+set timeout 30
+set root [file normalize [file join [file dirname [info script]] ../..]]
+set backend [lindex $argv 0]
+set wave [lindex $argv 1]
+if {$wave eq ""} { set wave 1 }
+set tmp ""
+set child ""
+set case_count 0
+
+proc await {pattern label} {
+    global spawn_id
+    expect {
+        -re $pattern { return $expect_out(buffer) }
+        timeout { error "timeout waiting for $label" }
+        eof { error "early exit waiting for $label" }
+    }
+}
+proc command {line pattern} {
+    global spawn_id case_count
+    send -- "$line\r"
+    set output [await {(^|[\r\n])# } "prompt after $line"]
+    if {$pattern ne "" && ![regexp -- $pattern $output]} { error "unexpected result: $output" }
+    if {$pattern eq "" && [regexp {Unsupported|Invalid argument|Cannot |Unterminated|Redirection is not supported|Nested source|History entry is unavailable} $output]} {
+        error "command failed: $output"
+    }
+    incr case_count
+    return $output
+}
+proc start {} {
+    global root backend tmp child spawn_id env
+    set base /tmp
+    if {[info exists env(TMPDIR)]} { set base $env(TMPDIR) }
+    set tmp [exec mktemp -d [file join $base jash11-edition.XXXXXX]]
+    set images $root/jash11/build
+    if {[info exists env(JASH11_OUTPUT_DIR)]} { set images $env(JASH11_OUTPUT_DIR) }
+    foreach disk {rf0 rk0} { file copy $images/$disk.dsk $tmp/$disk.dsk }
+    if {$backend eq "bemu"} {
+        spawn -noecho $root/bemu-pdp11/bemu-pdp11 $tmp/rf0.dsk $tmp/rk0.dsk
+    } elseif {$backend eq "simh"} {
+        set f [open $root/simh.cfg]
+        set cfg [string map [list images/rf0.dsk $tmp/rf0.dsk images/rk0.dsk $tmp/rk0.dsk images/tape $tmp/tape images/m792low.load $root/boot/m792low.load] [read $f]]
+        close $f
+        regsub -line {^att dci .*$} $cfg {} cfg
+        regsub -line {^set rha disabled$} $cfg {} cfg
+        set f [open $tmp/simh.cfg w]
+        puts $f $cfg
+        close $f
+        spawn -noecho $root/tools/pdp11 $tmp/simh.cfg
+    } else { error "backend must be bemu or simh" }
+    set child [exp_pid]
+    await {login:} login
+    send -- "root\r"
+    await {(^|[\r\n])# } "historical shell"
+    send -- "/bin/jash -p\r"
+    await {Jash/11} "native banner"
+    await {(^|[\r\n])# } "native prompt"
+}
+proc wave1 {} {
+    command {echo "two words" tail} {(^|[\r\n])two words tail[ \r\n]}
+    command {echo pre"mid dle"post} {(^|[\r\n])premid dlepost[ \r\n]}
+    command {echo '' X} {(^|[\r\n]) X[ \r\n]}
+    command {echo 'a;b|c<>$'} {(^|[\r\n])a;b\|c<>\$[ \r\n]}
+    command {echo a\ b} {(^|[\r\n])a b[ \r\n]}
+    command {echo \"Q\"} {(^|[\r\n])"Q"[ \r\n]}
+    command {echo "unterminated} {Unterminated quote or escape}
+    command "echo trailing\\" {Unterminated quote or escape}
+    command {echo recovery} {(^|[\r\n])recovery[ \r\n]}
+    command {echo one two three four five six "seven eight"} {(^|[\r\n])one two three four five six seven eight[ \r\n]}
+    command {echo one two three four five six seven eight} {Invalid argument count}
+}
+proc wave2 {} {
+    command {echo first >/tmp/jone} {}
+    command {cat /tmp/jone} {(^|[\r\n])first[ \r\n]}
+    command {echo second >>/tmp/jone} {}
+    command {cat </tmp/jone} {first[ \r\n]+second}
+    command {echo replaced > /tmp/jone} {}
+    set output [command {cat /tmp/jone} {(^|[\r\n])replaced[ \r\n]}]
+    if {[regexp {(^|[\r\n])(first|second)[ \r\n]} $output]} { error "truncate failed" }
+    command {help >/tmp/jhelp} {}
+    command {cat /tmp/jhelp} {Jash/11}
+    command {echo "space name" >'/tmp/j space'} {}
+    command {cat '/tmp/j space'} {(^|[\r\n])space name[ \r\n]}
+    command {cd /usr >/tmp/jbad} {Redirection is not supported for this builtin}
+    command {ls} {(^|[\r\n])bin[\r\n]}
+    set output [command {ls /tmp} {}]
+    if {[regexp {(^|[\r\n])jbad[\r\n]} $output]} { error "stateful rejection created a file" }
+    command {cat </tmp/absent >/tmp/jone} {Cannot redirect input}
+    command {cat /tmp/jone} {(^|[\r\n])replaced[ \r\n]}
+    command {echo nope >/absent/out} {Cannot redirect output}
+    command {echo nope >/tmp/ja >/tmp/jb} {Unsupported shell syntax}
+    command {cat <} {Unsupported shell syntax}
+    command {echo >''} {Unsupported shell syntax}
+    command {echo no >/tmp/ja "unterminated} {Unterminated quote or escape}
+    command {echo after-redirection} {(^|[\r\n])after-redirection[ \r\n]}
+    command {rm /tmp/jone /tmp/jhelp '/tmp/j space'} {}
+}
+proc wave3 {} {
+    command {echo 'echo script-one' >/tmp/jsc} {}
+    command {echo 'cd /usr' >>/tmp/jsc} {}
+    command {echo 'ls' >>/tmp/jsc} {}
+    command {echo 'chdir /' >>/tmp/jsc} {}
+    command {source /tmp/jsc} {script-one[ \r\n]+boot}
+    command {ls} {(^|[\r\n])bin[\r\n]}
+    command {/bin/jash -p /tmp/jsc} {script-one[ \r\n]+boot}
+    command {source /tmp/absent} {Cannot open command file}
+    command {echo 'source /tmp/jsc' >/tmp/jnest} {}
+    command {source /tmp/jnest} {Nested source is not supported}
+    command {/bin/jash -c 'echo command-mode'} {(^|[\r\n])command-mode[ \r\n]}
+    command {/bin/jash -p -c 'echo plain-command'} {(^|[\r\n])plain-command[ \r\n]}
+    command {/bin/jash -c 'source /tmp/jsc'} {script-one[ \r\n]+boot}
+    command {/bin/jash -c 'echo command-file' >/tmp/jco} {}
+    set output [command {cat /tmp/jco} {(^|[\r\n])command-file[ \r\n]}]
+    if {[string first {Jash/11} $output] >= 0} { error "-c printed an interactive banner" }
+    command {/bin/jash -q} {Usage: jash}
+    command {/bin/jash -c} {Usage: jash}
+    command {source /tmp/jsc >/tmp/jbad} {Redirection is not supported for this builtin}
+    command {echo 'echo before-error' >/tmp/jerr} {}
+    command {echo 'echo "bad' >>/tmp/jerr} {}
+    command {echo 'echo after-error' >>/tmp/jerr} {}
+    set output [command {source /tmp/jerr} {before-error[ \r\n]+Unterminated quote or escape}]
+    if {![regexp {(^|[\r\n])after-error[ \r\n]} $output]} { error "source did not recover after bad syntax" }
+    command {rm /tmp/jsc /tmp/jnest /tmp/jco /tmp/jerr} {}
+}
+proc wave4 {} {
+    command {history clear} {}
+    command {echo hist-one} {(^|[\r\n])hist-one[ \r\n]}
+    command {echo hist-two} {(^|[\r\n])hist-two[ \r\n]}
+    command {history} {1 echo hist-one[\r\n]+2 echo hist-two}
+    command {!!} {(^|[\r\n])hist-two[ \r\n]}
+    command {!1} {(^|[\r\n])hist-one[ \r\n]}
+    command {history} {1 echo hist-one[\r\n]+2 echo hist-two}
+    command {history off} {}
+    command {echo private-line} {(^|[\r\n])private-line[ \r\n]}
+    command {history} {History is empty}
+    command {!!} {History entry is unavailable}
+    command {history on} {}
+    foreach name {one two three four five} { command "echo $name" "(^|\[\r\n\])$name\[ \r\n\]" }
+    set output [command {history} {1 echo two[\r\n]+2 echo three[\r\n]+3 echo four[\r\n]+4 echo five}]
+    if {[regexp {(^|[\r\n])1 echo one} $output]} { error "history did not evict oldest entry" }
+    command {!4} {(^|[\r\n])five[ \r\n]}
+    command {!5} {History entry is unavailable}
+    command {echo !1} {(^|[\r\n])!1[ \r\n]}
+    command {history clear} {}
+    command {complete ec} {(^|[\r\n])echo[\r\n]}
+    command {complete /usr/s} {/usr/src[\r\n]+/usr/sys}
+    command {complete /bin/ja} {(^|[\r\n])/bin/jash[\r\n]}
+    command {complete /tmp/zzzz} {No completions}
+    command {complete /absent/x} {Cannot open completion directory}
+    for {set n 0} {$n < 12} {incr n} { command {complete /usr/s} {/usr/src} }
+    command {complete /usr/s >/tmp/jcmp} {}
+    command {cat /tmp/jcmp} {/usr/src[\r\n]+/usr/sys}
+    command {rm /tmp/jcmp} {}
+    command {history off} {}
+}
+proc wave5 {} {
+    command {version} {(^|[\r\n])Jash/11 1\.0 \(native Unix V1 edition\)}
+    command {echo -n 'echo final-line' >/tmp/jnolf} {}
+    command {source /tmp/jnolf} {(^|[\r\n])final-line[ \r\n]}
+    command {/bin/jash -p /tmp/jnolf} {(^|[\r\n])final-line[ \r\n]}
+    command {echo '\# comment' >/tmp/jcomm} {}
+    command {echo 'echo comment-ok' >>/tmp/jcomm} {}
+    command {source /tmp/jcomm} {(^|[\r\n])comment-ok[ \r\n]}
+    for {set n 0} {$n < 12} {incr n} { command {source /tmp/jnolf} {(^|[\r\n])final-line[ \r\n]} }
+    command {/bin/jash -p /tmp/absent} {Cannot open command file}
+    command {source /usr} {Cannot open command file}
+    command {source /dev/tty8} {Cannot open command file}
+    command {/bin/jash -p /usr} {Cannot open command file}
+    command {/bin/jash -c ''} {}
+    command {/bin/jash -q >/tmp/jusage} {Usage: jash}
+    set output [command {cat /tmp/jusage} {}]
+    if {[string first {Usage:} $output] >= 0} { error "startup diagnostic leaked into stdout" }
+    command {help extra >/tmp/jbad} {Invalid argument count}
+    command {echo no >/tmp/jpipe | cat} {Unsupported shell syntax}
+    command {echo no >/tmp/jjob &} {Unsupported shell syntax}
+    command {echo no >>>/tmp/jbad} {Unsupported shell syntax}
+    set listing [command {ls /tmp} {}]
+    if {[regexp {(^|[\r\n])(jbad|jpipe|jjob)[\r\n]} $listing]} { error "invalid syntax had filesystem effects" }
+    command {missing >/tmp/jempty} {Cannot execute command}
+    set output [command {cat /tmp/jempty} {}]
+    if {[regexp {(^|[\r\n])Cannot execute} $output]} { error "diagnostic was written into stdout file" }
+    command {complete /} {(^|[\r\n])/bin[\r\n]}
+    command {complete ''} {Completion limit reached}
+    command {complete /usr/123456789} {No completions}
+    command {complete /tmp/jnolf/x} {Cannot open completion directory}
+    for {set n 0} {$n < 20} {incr n} {
+        command {echo "broken} {Unterminated quote or escape}
+        command {!9} {History entry is unavailable}
+    }
+    command {echo after-errors} {(^|[\r\n])after-errors[ \r\n]}
+    command {history on} {}
+    command {history clear} {}
+    command {echo history-file} {(^|[\r\n])history-file[ \r\n]}
+    command {history >/tmp/jhist} {}
+    command {cat /tmp/jhist} {1 echo history-file}
+    command {history off >/tmp/jbad} {Redirection is not supported for this builtin}
+    command {history off} {}
+    command {echo 'echo spaced-script' >'/tmp/j file'} {}
+    command {/bin/jash -p '/tmp/j file'} {(^|[\r\n])spaced-script[ \r\n]}
+    command "echo [string repeat x 114]" {(^|[\r\n])x{114}[\r\n]}
+    command {rm /tmp/jnolf /tmp/jcomm /tmp/jempty /tmp/jhist '/tmp/j file' /tmp/jusage} {}
+}
+
+proc qualification {} {
+    # Complete the public builtin arity and stateful-redirection matrix.
+    foreach line {{help extra} {version extra} {plain extra} {color extra}
+                  {exit extra} {cd} {cd / /usr} {chdir} {chdir / /usr}
+                  {source} {source /tmp/a /tmp/b} {history off extra}
+                  {history invalid} {complete} {complete / /usr}} {
+        command $line {Invalid argument count}
+    }
+    foreach line {{cd /usr} {chdir /usr} {source /tmp/absent} {plain} {color}
+                  {exit} {history clear} {history off} {history on}} {
+        command "$line >/tmp/qdeny" {Redirection is not supported for this builtin}
+    }
+    set listing [command {ls /tmp} {}]
+    if {[regexp {(^|[\r\n])qdeny[\r\n]} $listing]} { error "stateful redirection created qdeny" }
+    command {ls} {(^|[\r\n])bin[\r\n]}
+
+    command {echo -n joined >/tmp/qecho} {}
+    command {echo tail >>/tmp/qecho} {}
+    command {cat </tmp/qecho} {(^|[\r\n])joinedtail[\r\n]}
+    command {echo '' "" X} {(^|[\r\n])  X[\r\n]}
+    command {echo "literal $HOME"} {(^|[\r\n])literal \$HOME[\r\n]}
+    command {echo 'a\b'} {(^|[\r\n])a\\b[\r\n]}
+    command {echo a\;b} {(^|[\r\n])a;b[\r\n]}
+    command {echo '`literal`'} {(^|[\r\n])`literal`[\r\n]}
+    command {echo \`literal\`} {(^|[\r\n])`literal`[\r\n]}
+    command {/bin/echo historical-echo} {(^|[\r\n])historical-echo[ \r\n]}
+    command {version >/tmp/qver} {}
+    command {cat /tmp/qver} {(^|[\r\n])Jash/11 1\.0 \(native Unix V1 edition\)}
+    command {help >>/tmp/qver} {}
+    command {cat /tmp/qver} {Jash/11 1\.0.*Pipes, jobs, expansion and globbing}
+
+    foreach suffix {{| cat} {; echo unsafe} {&} {&& echo unsafe} {|| echo unsafe}
+                    {*} {?} {[ab]} {$HOME} {`echo unsafe`}} {
+        command "echo forbidden >/tmp/qbad $suffix" {Unsupported shell syntax}
+    }
+    foreach line {{echo bad </tmp/a </tmp/b} {echo bad >} {echo bad >>}
+                  {echo bad <''} {echo bad >/tmp/qbad >>/tmp/qbad}} {
+        command $line {Unsupported shell syntax}
+    }
+    set listing [command {ls /tmp} {}]
+    if {[regexp {(^|[\r\n])qbad[\r\n]} $listing]} { error "unsupported syntax had filesystem effects" }
+
+    # Separate scripts do not change the parent directory; source does.
+    command {echo 'cd /usr' >/tmp/qsrc} {}
+    command {echo 'echo source-body' >>/tmp/qsrc} {}
+    command {/bin/jash -p /tmp/qsrc} {(^|[\r\n])source-body[\r\n]}
+    command {ls} {(^|[\r\n])bin[\r\n]}
+    command {history on} {}
+    command {history clear} {}
+    command {source /tmp/qsrc} {(^|[\r\n])source-body[\r\n]}
+    set retained [command {history} {source /tmp/qsrc}]
+    if {[string first {echo source-body} $retained] >= 0} { error "source body leaked into history" }
+    command {ls} {(^|[\r\n])src[\r\n]}
+    command {chdir /} {}
+    command {history off} {}
+
+    # Script command input must not replace an exec child's terminal stdin.
+    command {echo 'echo before-stdin' >/tmp/qstdin} {}
+    command {echo cat >>/tmp/qstdin} {}
+    command {echo 'echo after-stdin' >>/tmp/qstdin} {}
+    global spawn_id
+    send -- "source /tmp/qstdin\r"
+    await {(^|[\r\n])before-stdin[\r\n]} "script before child stdin"
+    send -- "child-stdin-ok\r\004"
+    set output [await {(^|[\r\n])# } "source resumes after child EOF"]
+    if {![regexp {(^|[\r\n])child-stdin-ok[\r\n]} $output] ||
+        ![regexp {(^|[\r\n])after-stdin[\r\n]} $output]} { error "child stdin or source descriptor isolation failed: $output" }
+    global case_count
+    incr case_count
+
+    command {mkdir /tmp/qdir} {}
+    command {echo visible >/tmp/qdir/qvisible} {}
+    command {echo hidden >/tmp/qdir/.qhide} {}
+    set output [command {complete /tmp/qdir/} {/tmp/qdir/qvisible}]
+    if {[string first {.qhide} $output] >= 0} { error "completion exposed a hidden entry without dot prefix" }
+    command {complete /tmp/qdir/.} {/tmp/qdir/\.qhide}
+    command {complete /tmp/qdir/qv >/tmp/qcmp} {}
+    command {cat /tmp/qcmp} {(^|[\r\n])/tmp/qdir/qvisible[\r\n]}
+    command {complete /tmp/qecho/} {Cannot open completion directory}
+    command {/bin/jash -p -c echo extra} {Usage: jash}
+    command {/bin/jash /tmp/qsrc extra} {Usage: jash}
+    command {echo qualification-recovery} {(^|[\r\n])qualification-recovery[\r\n]}
+    command {rm /tmp/qecho /tmp/qver /tmp/qsrc /tmp/qstdin /tmp/qcmp} {}
+    command {rm /tmp/qdir/qvisible /tmp/qdir/.qhide} {}
+    command {rmdir /tmp/qdir} {}
+}
+
+proc finish {} {
+    global backend child spawn_id
+    send -- "exit\r"
+    await {(^|[\r\n])# } "historical shell after native exit"
+    send -- "\005"
+    if {$backend eq "simh"} { await {sim>} monitor; send -- "q\r" }
+    expect { eof {} timeout { error "emulator did not exit" } }
+    set status [wait]
+    set child ""
+    if {[lindex $status 2] || [lindex $status 3]} { error "exit status: $status" }
+}
+set failed [catch {
+    start
+    wave1
+    if {$wave >= 2} { wave2 }
+    if {$wave >= 3} { wave3 }
+    if {$wave >= 4} { wave4 }
+    if {$wave >= 5} { wave5 }
+    if {[lindex $argv 2] eq "qualify"} { qualification }
+    finish
+} message]
+if {$child ne ""} { catch {exec kill -KILL $child}; catch {close}; catch {wait} }
+if {$tmp ne ""} { file delete -force $tmp }
+if {$failed} { puts stderr "\n\[TEST\] FAIL ($backend, wave $wave): $message"; exit 1 }
+puts "\n\[TEST\] PASS ($backend): edition waves through $wave"
+puts "\[TEST\] checked command cases ($backend): $case_count"

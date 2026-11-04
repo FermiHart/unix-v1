@@ -1,0 +1,27 @@
+/ Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+/ License: original unix-v1 terms; see ../../LICENSE.
+/
+/ cpu5 self-test: negative-indexed byte ops (putlu shapes)
+/ R0=52 oct on success. V1 as. Position-independent.
+halt = 0
+    mov $1000,sp
+    mov pc,r2
+    add $tab-.,r2
+    add $4,r2             / r2 -> tab+4
+    mov $130,r0
+    movb r0,-1(r2)        / tab[3] = X
+    movb -1(r2),r0        / read back
+    cmp $130,r0
+    bne fail
+    cmpb $130,-1(r2)
+    bne fail
+    movb $7,0(r2)         / tab+4 = 7, mode-0-ish indexed base
+    movb 0(r2),r0
+    cmp $7,r0
+    bne fail
+    mov $52,r0
+    halt
+fail:
+    clr r0
+    halt
+tab:   .byte 141,142,143,144,145,0,0,0

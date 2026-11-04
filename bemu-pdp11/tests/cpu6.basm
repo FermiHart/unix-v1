@@ -1,0 +1,78 @@
+/ Copyright (c) 2026, F E R M I ∞ H A R T <contact@fermihart.com>
+/ License: original unix-v1 terms; see ../../LICENSE.
+/
+/ cpu6 regression: MOVB sign extension, byte RMW and condition codes.
+/ 100% PDP-11 instructions, assembled with V1 as, R0=52 oct on success.
+halt = 0
+    mov $1000,sp
+/ Positive MOVB clears the old high byte (kernel canon compares a word).
+    mov $177777,r1
+    movb $12,r1
+    cmp $12,r1
+    bne fail
+/ Negative MOVB sign-extends, including register and memory sources.
+    mov $252,r2
+    movb r2,r3
+    cmp $177652,r3
+    bne fail
+    movb $252,slot
+    mov $12345,r3
+    movb slot,r3
+    cmp $177652,r3
+    bne fail
+    cmpb $252,slot
+    bne fail
+/ Other byte operations must preserve the register high byte.
+    mov $12345,r1
+    clrb r1
+    cmp $12000,r1
+    bne fail
+    bisb $12,r1
+    cmp $12012,r1
+    bne fail
+    bicb $10,r1
+    cmp $12002,r1
+    bne fail
+/ SCC/CCC and selective SEC/CLC/SEV/CLV/SEZ/CLZ/SEN/CLN.
+    277
+    bcc fail
+    bpl fail
+    bvc fail
+    bne fail
+    257
+    bcs fail
+    bmi fail
+    bvs fail
+    beq fail
+    261
+    bcc fail
+    241
+    bcs fail
+    262
+    bvc fail
+    242
+    bvs fail
+    264
+    bne fail
+    244
+    beq fail
+    270
+    bpl fail
+    250
+    bmi fail
+/ MOVB changes NZ, clears V, but preserves C.
+    277
+    movb $0,r1
+    bcc fail
+    bmi fail
+    bvs fail
+    bne fail
+    240
+    bcc fail
+    bne fail
+    mov $52,r0
+    halt
+fail:
+    clr r0
+    halt
+slot: 0
